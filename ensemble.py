@@ -206,8 +206,12 @@ def ensemble_beam_search(
                 if this_peer_finished_flag.item() == 0.0:
                     break
 
-            model_inputs = [self.prepare_inputs_for_generation(input_ids, **model_kwargs) for input_seq in input_ids]
+            # TODO: do this separately for each model
+            # TODO: add preprocessing abstraction
+            # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
+            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
+            # TODO: once per model
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -219,15 +223,20 @@ def ensemble_beam_search(
                 cur_len = cur_len + 1
                 continue  # don't waste resources running the code we don't need
 
+            # TODO: once per model
             next_token_logits = outputs.logits[:, -1, :]
             next_token_scores = nn.functional.log_softmax(
                 next_token_logits, dim=-1
             )  # (batch_size * num_beams, vocab_size)
 
+            # TODO: not sure where this is used, possible it could be deleted
             next_token_scores_processed = logits_processor(input_ids, next_token_scores)
             next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
                 next_token_scores_processed
             )
+
+            # TODO (main): merge the outputs, create synced / unsynced beam item abstractions!
+            
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
