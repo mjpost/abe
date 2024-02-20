@@ -28,6 +28,10 @@ from transformers.generation.utils import (
 )
 from transformers.generation.stopping_criteria import validate_stopping_criteria
 
+from models import get_model_bundle, ModelBundle
+
+
+
 
 def _update_model_kwargs_for_generation(
     outputs: ModelOutput,
@@ -83,11 +87,9 @@ def _extract_past_from_model_output(outputs: ModelOutput, standardize_cache_form
 
 
 def ensemble_beam_search(
-        input_ids: torch.LongTensor,
-        model: List[AutoModelForSeq2SeqLM],
+        input: str,
+        bundle: ModelBundle,
         beam_scorer: BeamScorer,
-        logits_processor: Optional[LogitsProcessorList] = None,
-        stopping_criteria: Optional[StoppingCriteriaList] = None,
         max_length: Optional[int] = None,
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[Union[int, List[int]]] = None,
@@ -206,14 +208,14 @@ def ensemble_beam_search(
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Wie alt bist du?']
         ```"""
-        generation_config = copy.deepcopy(model.generation_config)
+        generation_config = copy.deepcopy(bundle.model.generation_config)
         model_kwargs = generation_config.update(**model_kwargs)  # All unused kwargs must be model kwargs
         generation_config.validate()
-        model._validate_model_kwargs(model_kwargs.copy())
+        bundle.model._validate_model_kwargs(model_kwargs.copy())
 
         # init values
-        logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
-        stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
+        logits_processor = bundle.logits_processor
+        stopping_criteria = bundle.stopping_criteria
         if max_length is not None:
             warnings.warn(
                 "`max_length` is deprecated in this function, use"
@@ -243,6 +245,23 @@ def ensemble_beam_search(
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
 
+        """
+        >>> input_ids = torch.ones((num_beams, 1), device=model.device, dtype=torch.long)
+        >>> input_ids = input_ids * model.config.decoder_start_token_id
+
+        >>> # add encoder_outputs to model keyword arguments
+        >>> model_kwargs = {
+        ...     "encoder_outputs": model.get_encoder()(
+        ...         encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
+        ...     )
+        ... }
+        """
+
+        encoder_input_ids = bundle.tokenize(input)
+
+        input_ids = torch.ones((num_beams, 1), device=bundle.model.device, dtype=torch.long)
+        input_ids = input_ids * bundle.model.config.decoder_start_token_id
+
         batch_beam_size, cur_len = input_ids.shape
 
         if num_beams * batch_size != batch_beam_size:
@@ -259,7 +278,7 @@ def ensemble_beam_search(
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
 
-        config = model.config
+        config = bundle.model.config
 
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
         if return_dict_in_generate and config.is_encoder_decoder:
@@ -291,10 +310,10 @@ def ensemble_beam_search(
             # TODO: do this separately for each model
             # TODO: add preprocessing abstraction
             # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
-            model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs = bundle.model.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             # TODO: once per model
-            outputs = model(
+            outputs = bundle.model(
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -317,8 +336,9 @@ def ensemble_beam_search(
                 next_token_scores_processed
             )
 
-            # TODO (main): merge the outputs, create synced / unsynced beam item abstractions!
-            
+            ## 
+            ## TODO (main): merge the outputs, create synced / unsynced beam item abstractions!
+            ## 
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
@@ -372,8 +392,10 @@ def ensemble_beam_search(
             model_kwargs = _update_model_kwargs_for_generation(
                 outputs, model_kwargs, is_encoder_decoder=config.is_encoder_decoder
             )
+
+            # I don't know what this is so I'm commenting it out
             if model_kwargs["past_key_values"] is not None:
-                warnings.warn("past_key_values are not supported for ensemble generation")
+                warnings.warn(f"past_key_values are not supported for ensemble generation")
             #     model_kwargs["past_key_values"] = self._temporary_reorder_cache(
             #         model_kwargs["past_key_values"], beam_idx
             #     )
@@ -436,23 +458,25 @@ def ensemble_beam_search(
 
 def main(args):
 
-    tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-600M")
-    model = AutoModelForSeq2SeqLM.from_pretrained("facebook/nllb-200-distilled-600M")
+    bundle = get_model_bundle("facebook/nllb-200-distilled-600M")
+
+    tokenizer = bundle.tokenizer
+    model = bundle.model
 
     for line in sys.stdin:
-        article = line.rstrip()
-        inputs = tokenizer(article, return_tensors="pt")
-        encoder_input_ids = inputs.input_ids
+        line = line.rstrip()
+
+        encoder_input_ids = bundle.tokenize(line)
 
         num_beams = args.num_beams
 
         # define decoder start token ids
-        input_ids = torch.ones((num_beams, 1), device=model.device, dtype=torch.long)
-        input_ids = input_ids * model.config.decoder_start_token_id
+        input_ids = torch.ones((num_beams, 1), device=bundle.model.device, dtype=torch.long)
+        input_ids = input_ids * bundle.model.config.decoder_start_token_id
 
         # add encoder_outputs to model keyword arguments
         model_kwargs = {
-            "encoder_outputs": model.get_encoder()(
+            "encoder_outputs": bundle.model.get_encoder()(
                 encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
             ),
         }
@@ -461,17 +485,7 @@ def main(args):
         beam_scorer = BeamSearchScorer(
             batch_size=1,
             num_beams=num_beams,
-            device=model.device,
-        )
-
-        # instantiate logits processors
-        logits_processor = LogitsProcessorList(
-            [
-                # This zeroes out the EOS token if the length < 5
-                MinLengthLogitsProcessor(5, eos_token_id=model.config.eos_token_id),
-                # TODO: parameterize
-                ForcedBOSTokenLogitsProcessor(tokenizer.lang_code_to_id["fra_Latn"]),
-            ]
+            device=bundle.model.device,
         )
 
         # TODO: add this if required by the model
@@ -479,7 +493,7 @@ def main(args):
         #     processors.append(ForcedBOSTokenLogitsProcessor(generation_config.forced_bos_token_id))
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(input_ids, model, beam_scorer, logits_processor=logits_processor, **model_kwargs)
+        outputs = ensemble_beam_search(line, bundle, beam_scorer, **model_kwargs)
 
         # translated_tokens = model.generate(
         #     **inputs, 
@@ -499,6 +513,7 @@ def main(args):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model-name", "-m", type="str", default="facebook/nllb-200-distilled-600M", help="Model name")
     parser.add_argument("--num_beams", type=int, default=5, help="Number of beams for beam search")
     args = parser.parse_args()
 
