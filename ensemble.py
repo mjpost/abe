@@ -93,7 +93,6 @@ def ensemble_beam_search(
         output_scores: Optional[bool] = None,
         return_dict_in_generate: Optional[bool] = None,
         synced_gpus: bool = False,
-        **model_kwargs,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
         r"""
         Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
@@ -106,103 +105,27 @@ def ensemble_beam_search(
         TODO:
         - [ ] Generalize to n models  
 
-        Generates sequences of token ids for models with a language modeling head using **beam search decoding** and
-        can be used for text-decoder, text-to-text, speech-to-text, and vision-to-text models.
+        """
 
-        Parameters:
-            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-                The sequence used as a prompt for the generation.
-            beam_scorer (`BeamScorer`):
-                An derived instance of [`BeamScorer`] that defines how beam hypotheses are constructed, stored and
-                sorted during generation. For more information, the documentation of [`BeamScorer`] should be read.
-            logits_processor (`LogitsProcessorList`, *optional*):
-                An instance of [`LogitsProcessorList`]. List of instances of class derived from [`LogitsProcessor`]
-                used to modify the prediction scores of the language modeling head applied at each generation step.
-            stopping_criteria (`StoppingCriteriaList`, *optional*):
-                An instance of [`StoppingCriteriaList`]. List of instances of class derived from [`StoppingCriteria`]
-                used to tell if the generation loop should stop.
-            max_length (`int`, *optional*, defaults to 20):
-                **DEPRECATED**. Use `logits_processor` or `stopping_criteria` directly to cap the number of generated
-                tokens. The maximum length of the sequence to be generated.
-            pad_token_id (`int`, *optional*):
-                The id of the *padding* token.
-            eos_token_id (`Union[int, List[int]]`, *optional*):
-                The id of the *end-of-sequence* token. Optionally, use a list to set multiple *end-of-sequence* tokens.
-            output_attentions (`bool`, *optional*, defaults to `False`):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more details.
-            output_hidden_states (`bool`, *optional*, defaults to `False`):
-                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
-                for more details.
-            output_scores (`bool`, *optional*, defaults to `False`):
-                Whether or not to return the prediction scores. See `scores` under returned tensors for more details.
-            return_dict_in_generate (`bool`, *optional*, defaults to `False`):
-                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-            synced_gpus (`bool`, *optional*, defaults to `False`):
-                Whether to continue running the while loop until max_length (needed for ZeRO stage 3)
-            model_kwargs:
-                Additional model specific kwargs will be forwarded to the `forward` function of the model. If model is
-                an encoder-decoder model the kwargs should include `encoder_outputs`.
+        batch_size = len(beam_scorer._beam_hyps)
+        num_beams = beam_scorer.num_beams
 
-        Return:
-            [`generation.GenerateBeamDecoderOnlyOutput`], [`~generation.GenerateBeamEncoderDecoderOutput`] or
-            `torch.LongTensor`: A `torch.LongTensor` containing the generated tokens (default behaviour) or a
-            [`~generation.GenerateBeamDecoderOnlyOutput`] if `model.config.is_encoder_decoder=False` and
-            `return_dict_in_generate=True` or a [`~generation.GenerateBeamEncoderDecoderOutput`] if
-            `model.config.is_encoder_decoder=True`.
+        encoder_input_ids = bundle.tokenize(input)
+        input_ids = torch.ones((num_beams, 1), device=bundle.model.device, dtype=torch.long)
+        input_ids = input_ids * bundle.model.config.decoder_start_token_id
 
+        batch_beam_size, cur_len = input_ids.shape
+        if num_beams * batch_size != batch_beam_size:
+            raise ValueError(
+                f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
+            )        
 
-        Examples:
-
-        ```python
-        >>> from transformers import (
-        ...     AutoTokenizer,
-        ...     AutoModelForSeq2SeqLM,
-        ...     LogitsProcessorList,
-        ...     MinLengthLogitsProcessor,
-        ...     BeamSearchScorer,
-        ... )
-        >>> import torch
-
-        >>> tokenizer = AutoTokenizer.from_pretrained("t5-base")
-        >>> model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
-
-        >>> encoder_input_str = "translate English to German: How old are you?"
-        >>> encoder_input_ids = tokenizer(encoder_input_str, return_tensors="pt").input_ids
-
-
-        >>> # lets run beam search using 3 beams
-        >>> num_beams = 3
-        >>> # define decoder start token ids
-        >>> input_ids = torch.ones((num_beams, 1), device=model.device, dtype=torch.long)
-        >>> input_ids = input_ids * model.config.decoder_start_token_id
-
-        >>> # add encoder_outputs to model keyword arguments
-        >>> model_kwargs = {
-        ...     "encoder_outputs": model.get_encoder()(
-        ...         encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
-        ...     )
-        ... }
-
-        >>> # instantiate beam scorer
-        >>> beam_scorer = BeamSearchScorer(
-        ...     batch_size=1,
-        ...     num_beams=num_beams,
-        ...     device=model.device,
-        ... )
-
-        >>> # instantiate logits processors
-        >>> logits_processor = LogitsProcessorList(
-        ...     [
-        ...         MinLengthLogitsProcessor(5, eos_token_id=model.config.eos_token_id),
-        ...     ]
-        ... )
-
-        >>> outputs = model.ensemble_beam_search(input_ids, beam_scorer, logits_processor=logits_processor, **model_kwargs)
-
-        >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        ['Wie alt bist du?']
-        ```"""
+        # add encoder_outputs to model keyword arguments
+        model_kwargs = {
+            "encoder_outputs": bundle.model.get_encoder()(
+                encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
+            ),
+        }
         generation_config = copy.deepcopy(bundle.model.generation_config)
         model_kwargs = generation_config.update(**model_kwargs)  # All unused kwargs must be model kwargs
         generation_config.validate()
@@ -236,33 +159,6 @@ def ensemble_beam_search(
             if return_dict_in_generate is not None
             else generation_config.return_dict_in_generate
         )
-
-        batch_size = len(beam_scorer._beam_hyps)
-        num_beams = beam_scorer.num_beams
-
-        """
-        >>> input_ids = torch.ones((num_beams, 1), device=model.device, dtype=torch.long)
-        >>> input_ids = input_ids * model.config.decoder_start_token_id
-
-        >>> # add encoder_outputs to model keyword arguments
-        >>> model_kwargs = {
-        ...     "encoder_outputs": model.get_encoder()(
-        ...         encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
-        ...     )
-        ... }
-        """
-
-        encoder_input_ids = bundle.tokenize(input)
-
-        input_ids = torch.ones((num_beams, 1), device=bundle.model.device, dtype=torch.long)
-        input_ids = input_ids * bundle.model.config.decoder_start_token_id
-
-        batch_beam_size, cur_len = input_ids.shape
-
-        if num_beams * batch_size != batch_beam_size:
-            raise ValueError(
-                f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
-            )
 
         # init attention / hidden states / scores tuples
         scores = () if (return_dict_in_generate and output_scores) else None
@@ -462,45 +358,23 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 def main(args):
 
     bundle = get_model_bundle(args.model_name)
-
-    tokenizer = bundle.tokenizer
-    model = bundle.model
-
-    bundle.logits_processor.append(
+    bundle2 = get_model_bundle(args.model_name)
+    bundle2.logits_processor.append(
         RandomNoiseLogitsProcessor(1)
     )
 
     for line in sys.stdin:
         line = line.rstrip()
 
-        encoder_input_ids = bundle.tokenize(line)
-
-        num_beams = args.num_beams
-
-        # define decoder start token ids
-        input_ids = torch.ones((num_beams, 1), device=bundle.model.device, dtype=torch.long)
-        input_ids = input_ids * bundle.model.config.decoder_start_token_id
-
-        # add encoder_outputs to model keyword arguments
-        model_kwargs = {
-            "encoder_outputs": bundle.model.get_encoder()(
-                encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
-            ),
-        }
-
         # instantiate beam scorer
         beam_scorer = BeamSearchScorer(
             batch_size=1,
-            num_beams=num_beams,
+            num_beams=args.num_beams,
             device=bundle.model.device,
         )
 
-        # TODO: add this if required by the model
-        # if generation_config.forced_bos_token_id is not None:
-        #     processors.append(ForcedBOSTokenLogitsProcessor(generation_config.forced_bos_token_id))
-
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, bundle, beam_scorer, **model_kwargs)
+        outputs = ensemble_beam_search(line, bundle, beam_scorer)
 
         # translated_tokens = model.generate(
         #     **inputs, 
@@ -512,7 +386,7 @@ def main(args):
         # )
 
         # decode with the combined vocabulary
-        result = tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+        result = bundle.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
         print(result)
 
