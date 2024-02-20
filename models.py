@@ -21,6 +21,13 @@ def get_model_bundle(
         bos_token_id = tokenizer.lang_code_to_id["fra_Latn"]
 
         return ModelBundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
+    elif model_name == "facebook/m2m100_418M":
+        from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
+        tokenizer = M2M100Tokenizer.from_pretrained(model_name)
+        model = M2M100ForConditionalGeneration.from_pretrained(model_name)
+        bos_token_id = tokenizer.lang_code_to_id["fr"]
+
+        return ModelBundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
@@ -47,7 +54,7 @@ class ModelBundle:
 
         if self.bos_force_token is not None:
             self.logits_processor = LogitsProcessorList(
-                [ ForcedBOSTokenLogitsProcessor(tokenizer.lang_code_to_id["fra_Latn"]) ]
+                [ ForcedBOSTokenLogitsProcessor(bos_force_token) ]
             )
 
     def tokenize(self, line: str, return_tensors="pt"):

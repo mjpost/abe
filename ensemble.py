@@ -458,7 +458,7 @@ def ensemble_beam_search(
 
 def main(args):
 
-    bundle = get_model_bundle("facebook/nllb-200-distilled-600M")
+    bundle = get_model_bundle(args.model_name)
 
     tokenizer = bundle.tokenizer
     model = bundle.model
@@ -493,7 +493,7 @@ def main(args):
         #     processors.append(ForcedBOSTokenLogitsProcessor(generation_config.forced_bos_token_id))
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, bundle, beam_scorer, **model_kwargs)
+        outputs = ensemble_beam_search(line, bundle, beam_scorer, target_lang=args.target_lang, **model_kwargs)
 
         # translated_tokens = model.generate(
         #     **inputs, 
@@ -513,7 +513,8 @@ def main(args):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-name", "-m", type="str", default="facebook/nllb-200-distilled-600M", help="Model name")
+    parser.add_argument("--model-name", "-m", type=str, default="facebook/nllb-200-distilled-600M", help="Model name")
+    parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
     parser.add_argument("--num_beams", type=int, default=5, help="Number of beams for beam search")
     args = parser.parse_args()
 
