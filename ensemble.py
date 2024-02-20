@@ -296,7 +296,7 @@ def main(args):
     model2 = get_model_bundle(args.model_name)
 
     if args.noise is not None:
-        model2.logits_processor.append(
+        model.logits_processor.append(
             RandomNoiseLogitsProcessor(args.noise)
         )
 
