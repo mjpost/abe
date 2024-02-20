@@ -51,13 +51,16 @@ def ensemble_beam_search(
 
         model = models[0]
 
-        batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
 
-        model.set_input(input, num_beams=num_beams)
+        for model in models:
+            model.set_input(input, num_beams=num_beams)
+
+        # TODO: this has to be in the shared vocabulary space
         output_ids = torch.ones((num_beams, 1), device=model.model.device, dtype=torch.long)
         output_ids = output_ids * model.model.config.decoder_start_token_id
 
+        batch_size = len(beam_scorer._beam_hyps)
         batch_beam_size, cur_len = output_ids.shape
         if num_beams * batch_size != batch_beam_size:
             raise ValueError(
@@ -65,7 +68,6 @@ def ensemble_beam_search(
             )        
 
         # init values
-        logits_processor = model.logits_processor
         stopping_criteria = model.stopping_criteria
         if max_length is not None:
             warnings.warn(
@@ -116,38 +118,24 @@ def ensemble_beam_search(
 
         decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
         while True:
-            if synced_gpus:
-                # Under synced_gpus the `forward` call must continue until all gpus complete their sequence.
-                # The following logic allows an early break if all peers finished generating their sequence
-                this_peer_finished_flag = torch.tensor(0.0 if this_peer_finished else 1.0).to(output_ids.device)
-                # send 0.0 if we finished, 1.0 otherwise
-                dist.all_reduce(this_peer_finished_flag, op=dist.ReduceOp.SUM)
-                # did all peers finish? the reduced sum will be 0.0 then
-                if this_peer_finished_flag.item() == 0.0:
-                    break
-
             # TODO: do this separately for each model
             # TODO: add preprocessing abstraction
             # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
-            model_inputs = model.prepare_inputs_for_generation(output_ids)
 
-            # TODO: once per model
-            outputs = model.step(model_inputs)
+            for model in models:
+                model_inputs = model.prepare_inputs_for_generation(output_ids)
 
-            if synced_gpus and this_peer_finished:
-                cur_len = cur_len + 1
-                continue  # don't waste resources running the code we don't need
+                outputs = model.step(model_inputs)
 
-            # TODO: once per model
-            next_token_logits = outputs.logits[:, -1, :]
-            next_token_scores = nn.functional.log_softmax(
-                next_token_logits, dim=-1
-            )  # (batch_size * num_beams, vocab_size)
+                next_token_logits = outputs.logits[:, -1, :]
+                next_token_scores = nn.functional.log_softmax(
+                    next_token_logits, dim=-1
+                )  # (batch_size * num_beams, vocab_size)
 
-            next_token_scores_processed = logits_processor(output_ids, next_token_scores)
-            next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
-                next_token_scores_processed
-            )
+                next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
+                next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
+                    next_token_scores_processed
+                )
 
             ## 
             ## TODO (main): merge the outputs, create synced / unsynced beam item abstractions!
