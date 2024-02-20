@@ -19,66 +19,10 @@ from transformers.generation.utils import (
     GenerateBeamOutput, 
     GenerateBeamDecoderOnlyOutput, 
     GenerateBeamEncoderDecoderOutput,
-    ModelOutput,
 )
 from transformers.generation.stopping_criteria import validate_stopping_criteria
 
 from models import get_model_bundle, Model
-
-
-
-
-def _update_model_kwargs_for_generation(
-    outputs: ModelOutput,
-    model_kwargs: Dict[str, Any],
-    is_encoder_decoder: bool = False,
-    standardize_cache_format: bool = False,
-) -> Dict[str, Any]:
-    # update past_key_values
-    model_kwargs["past_key_values"] = _extract_past_from_model_output(
-        outputs, standardize_cache_format=standardize_cache_format
-    )
-    if getattr(outputs, "state", None) is not None:
-        model_kwargs["state"] = outputs.state
-
-    # update token_type_ids with last value
-    if "token_type_ids" in model_kwargs:
-        token_type_ids = model_kwargs["token_type_ids"]
-        model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
-
-    if not is_encoder_decoder:
-        # update attention mask
-        if "attention_mask" in model_kwargs:
-            attention_mask = model_kwargs["attention_mask"]
-            model_kwargs["attention_mask"] = torch.cat(
-                [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
-            )
-    else:
-        # update decoder attention mask
-        if "decoder_attention_mask" in model_kwargs:
-            decoder_attention_mask = model_kwargs["decoder_attention_mask"]
-            model_kwargs["decoder_attention_mask"] = torch.cat(
-                [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], 1))],
-                dim=-1,
-            )
-
-    return model_kwargs
-
-
-def _extract_past_from_model_output(outputs: ModelOutput, standardize_cache_format: bool = False):
-    past_key_values = None
-    if "past_key_values" in outputs:
-        past_key_values = outputs.past_key_values
-    elif "mems" in outputs:
-        past_key_values = outputs.mems
-    elif "past_buckets_states" in outputs:
-        past_key_values = outputs.past_buckets_states
-
-    # Bloom fix: standardizes the cache format when requested
-    # if standardize_cache_format and hasattr(self, "_convert_to_standard_cache"):
-    #     batch_size = outputs.logits.shape[0]
-    #     past_key_values = self._convert_to_standard_cache(past_key_values, batch_size=batch_size)
-    return past_key_values
 
 
 def ensemble_beam_search(
@@ -109,7 +53,7 @@ def ensemble_beam_search(
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
 
-        encoder_input_ids = model.set_input(input)
+        encoder_input_ids = model.set_input(input, num_beams=num_beams)
         input_ids = torch.ones((num_beams, 1), device=model.model.device, dtype=torch.long)
         input_ids = input_ids * model.model.config.decoder_start_token_id
 
@@ -201,7 +145,7 @@ def ensemble_beam_search(
             # TODO: do this separately for each model
             # TODO: add preprocessing abstraction
             # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
-            model_inputs = model.prepare_inputs_for_generation(input_ids, model_kwargs)
+            model_inputs = model.prepare_inputs_for_generation(input_ids)
 
             # TODO: once per model
             outputs = model.step(model_inputs)
@@ -273,10 +217,6 @@ def ensemble_beam_search(
             beam_idx = beam_outputs["next_beam_indices"]
 
             input_ids = torch.cat([input_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
-
-            model_kwargs = _update_model_kwargs_for_generation(
-                outputs, model_kwargs, is_encoder_decoder=config.is_encoder_decoder
-            )
 
             # I don't know what this is so I'm commenting it out
             # if model_kwargs["past_key_values"] is not None:
