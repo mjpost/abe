@@ -493,7 +493,7 @@ def main(args):
         #     processors.append(ForcedBOSTokenLogitsProcessor(generation_config.forced_bos_token_id))
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, bundle, beam_scorer, target_lang=args.target_lang, **model_kwargs)
+        outputs = ensemble_beam_search(line, bundle, beam_scorer, **model_kwargs)
 
         # translated_tokens = model.generate(
         #     **inputs, 
