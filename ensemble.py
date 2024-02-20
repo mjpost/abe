@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
 import sys
 import torch
 import warnings
@@ -204,7 +205,10 @@ def ensemble_beam_search(
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Wie alt bist du?']
         ```"""
-        generation_config = model.generation_config
+        generation_config = copy.deepcopy(model.generation_config)
+        model_kwargs = generation_config.update(**model_kwargs)  # All unused kwargs must be model kwargs
+        generation_config.validate()
+        model._validate_model_kwargs(model_kwargs.copy())
 
         # init values
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
@@ -449,7 +453,8 @@ def main(args):
         model_kwargs = {
             "encoder_outputs": model.get_encoder()(
                 encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
-            )
+            ),
+            "forced_bos_token_id": tokenizer.lang_code_to_id["fra_Latn"],
         }
 
         # instantiate beam scorer
