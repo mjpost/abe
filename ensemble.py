@@ -28,7 +28,7 @@ from vocab import SharedVocab
 
 def ensemble_beam_search(
         input: str,
-        model: Model,
+        models: List[Model],
         beam_scorer: BeamScorer,
         max_length: Optional[int] = None,
         output_scores: Optional[bool] = True,
@@ -48,6 +48,8 @@ def ensemble_beam_search(
         TODO:
         - [ ] Generalize to n models  
         """
+
+        model = models[0]
 
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
@@ -296,7 +298,7 @@ def main(args):
         )
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, model, beam_scorer, max_length=args.max_output_tokens)
+        outputs = ensemble_beam_search(line, models, beam_scorer, max_length=args.max_output_tokens)
 
         # decode with the combined vocabulary
         result = model.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
