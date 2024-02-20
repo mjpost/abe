@@ -13,6 +13,7 @@ from transformers import (
     AutoTokenizer,
     AutoModelForSeq2SeqLM,
     LogitsProcessorList,
+    ForcedBOSTokenLogitsProcessor,
     MinLengthLogitsProcessor,
     BeamSearchScorer,
     BeamScorer,
@@ -454,7 +455,6 @@ def main(args):
             "encoder_outputs": model.get_encoder()(
                 encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
             ),
-            "forced_bos_token_id": tokenizer.lang_code_to_id["fra_Latn"],
         }
 
         # instantiate beam scorer
@@ -469,8 +469,14 @@ def main(args):
             [
                 # This zeroes out the EOS token if the length < 5
                 MinLengthLogitsProcessor(5, eos_token_id=model.config.eos_token_id),
+                # TODO: parameterize
+                ForcedBOSTokenLogitsProcessor(tokenizer.lang_code_to_id["fra_Latn"]),
             ]
         )
+
+        # TODO: add this if required by the model
+        # if generation_config.forced_bos_token_id is not None:
+        #     processors.append(ForcedBOSTokenLogitsProcessor(generation_config.forced_bos_token_id))
 
         # normally you would now call beam search, but we need to implement it
         outputs = ensemble_beam_search(input_ids, model, beam_scorer, logits_processor=logits_processor, **model_kwargs)
