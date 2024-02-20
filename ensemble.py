@@ -23,7 +23,7 @@ from transformers.generation.utils import (
 )
 from transformers.generation.stopping_criteria import validate_stopping_criteria
 
-from models import get_model_bundle, ModelBundle
+from models import get_model_bundle, Model
 
 
 
@@ -83,7 +83,7 @@ def _extract_past_from_model_output(outputs: ModelOutput, standardize_cache_form
 
 def ensemble_beam_search(
         input: str,
-        bundle: ModelBundle,
+        bundle: Model,
         beam_scorer: BeamScorer,
         max_length: Optional[int] = None,
         pad_token_id: Optional[int] = None,
@@ -357,11 +357,13 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
-    bundle = get_model_bundle(args.model_name)
-    bundle2 = get_model_bundle(args.model_name)
-    bundle2.logits_processor.append(
-        RandomNoiseLogitsProcessor(1)
-    )
+    model = get_model_bundle(args.model_name)
+    model2 = get_model_bundle(args.model_name)
+
+    if args.noise is not None:
+        model2.logits_processor.append(
+            RandomNoiseLogitsProcessor(args.noise)
+        )
 
     for line in sys.stdin:
         line = line.rstrip()
@@ -370,11 +372,11 @@ def main(args):
         beam_scorer = BeamSearchScorer(
             batch_size=1,
             num_beams=args.num_beams,
-            device=bundle.model.device,
+            device=model.model.device,
         )
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, bundle, beam_scorer)
+        outputs = ensemble_beam_search(line, model, beam_scorer)
 
         # translated_tokens = model.generate(
         #     **inputs, 
@@ -386,7 +388,7 @@ def main(args):
         # )
 
         # decode with the combined vocabulary
-        result = bundle.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+        result = model.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
         print(result)
 
@@ -397,6 +399,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-name", "-m", type=str, default="facebook/nllb-200-distilled-600M", help="Model name")
     parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=5, help="Number of beams for beam search")
+    parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
     args = parser.parse_args()
 
     main(args)

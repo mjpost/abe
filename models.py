@@ -13,26 +13,26 @@ from transformers import (
 def get_model_bundle(
         model_name: str,
         target_language: Optional[str] = None,
-        ) -> "ModelBundle":
+        ) -> "Model":
     if model_name == "facebook/nllb-200-distilled-600M":
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
         tokenizer = NllbTokenizer.from_pretrained(model_name)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id["fra_Latn"]
 
-        return ModelBundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
+        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
     elif model_name == "facebook/m2m100_418M":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
         tokenizer = M2M100Tokenizer.from_pretrained(model_name)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id["fr"]
 
-        return ModelBundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
+        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
 
-class ModelBundle:
+class Model:
     def __init__(self,
                  model: Optional[PreTrainedModel] = None,
                  tokenizer: Optional[PreTrainedTokenizer] = None,
