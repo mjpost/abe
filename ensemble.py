@@ -3,15 +3,29 @@
 import argparse
 import sys
 import torch
-from transformers import BeamScorer, LogitsProcessorList, StoppingCriteriaList, validate_stopping_criteria, GenerateBeamOutput
-
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from typing import Optional, Union, List
+
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
+    LogitsProcessorList,
+    MinLengthLogitsProcessor,
+    BeamSearchScorer,
+    BeamScorer,
+    StoppingCriteriaList,
+)
+
+from transformers.generation.utils import (
+    GenerateBeamOutput, 
+    GenerateBeamDecoderOnlyOutput, 
+    GenerateBeamEncoderDecoderOutput,
+)
+from transformers.generation.stopping_criteria import validate_stopping_criteria
+
 
 
 def ensemble_beam_search(
-        self,
-        input_ids: List[torch.LongTensor],
+        input_ids: torch.LongTensor,
         beam_scorer: BeamScorer,
         max_length: Optional[int] = None,
         pad_token_id: Optional[int] = None,
@@ -359,15 +373,58 @@ def main(args):
     for line in sys.stdin:
         article = line.rstrip()
         inputs = tokenizer(article, return_tensors="pt")
+        encoder_input_ids = inputs.input_ids
 
-        translated_tokens = model.generate(
-            **inputs, 
-            forced_bos_token_id=tokenizer.lang_code_to_id["fra_Latn"], 
-            max_length=30,
-            num_beams=10, 
-            early_stopping=True
+        num_beams = args.num_beams
+
+        # define decoder start token ids
+        input_ids = torch.ones((num_beams, 1), device=model.device, dtype=torch.long)
+        input_ids = input_ids * model.config.decoder_start_token_id
+
+        # add encoder_outputs to model keyword arguments
+        model_kwargs = {
+            "encoder_outputs": model.get_encoder()(
+                encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
+            )
+        }
+
+        # instantiate beam scorer
+        beam_scorer = BeamSearchScorer(
+            batch_size=1,
+            num_beams=num_beams,
+            device=model.device,
         )
 
-        result = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0]
+        # instantiate logits processors
+        logits_processor = LogitsProcessorList(
+            [
+                # This zeroes out the EOS token if the length < 5
+                MinLengthLogitsProcessor(5, eos_token_id=model.config.eos_token_id),
+            ]
+        )
 
-        print(translated_tokens)
+        # normally you would now call beam search, but we need to implement it
+        outputs = ensemble_beam_search(input_ids, beam_scorer, logits_processor=logits_processor, **model_kwargs)
+
+        # translated_tokens = model.generate(
+        #     **inputs, 
+        #     max_length=30,
+        #     num_beams=10, 
+        #     early_stopping=True,
+        #     # this arg is specific to a decoder model
+        #     forced_bos_token_id=tokenizer.lang_code_to_id["fra_Latn"], 
+        # )
+
+        # decode with the combined vocabulary
+        result = tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+
+        print(result.encode("utf-8"))
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num_beams", type=int, default=5, help="Number of beams for beam search")
+    args = parser.parse_args()
+
+    main(args)
