@@ -3,7 +3,10 @@
 import argparse
 import sys
 import torch
-from typing import Optional, Union, List
+import warnings
+
+from typing import Optional, Union, List, Dict, Any
+from torch import nn
 
 from transformers import (
     AutoTokenizer,
@@ -19,14 +22,70 @@ from transformers.generation.utils import (
     GenerateBeamOutput, 
     GenerateBeamDecoderOnlyOutput, 
     GenerateBeamEncoderDecoderOutput,
+    ModelOutput,
 )
 from transformers.generation.stopping_criteria import validate_stopping_criteria
 
 
+def _update_model_kwargs_for_generation(
+    outputs: ModelOutput,
+    model_kwargs: Dict[str, Any],
+    is_encoder_decoder: bool = False,
+    standardize_cache_format: bool = False,
+) -> Dict[str, Any]:
+    # update past_key_values
+    model_kwargs["past_key_values"] = _extract_past_from_model_output(
+        outputs, standardize_cache_format=standardize_cache_format
+    )
+    if getattr(outputs, "state", None) is not None:
+        model_kwargs["state"] = outputs.state
+
+    # update token_type_ids with last value
+    if "token_type_ids" in model_kwargs:
+        token_type_ids = model_kwargs["token_type_ids"]
+        model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
+
+    if not is_encoder_decoder:
+        # update attention mask
+        if "attention_mask" in model_kwargs:
+            attention_mask = model_kwargs["attention_mask"]
+            model_kwargs["attention_mask"] = torch.cat(
+                [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+            )
+    else:
+        # update decoder attention mask
+        if "decoder_attention_mask" in model_kwargs:
+            decoder_attention_mask = model_kwargs["decoder_attention_mask"]
+            model_kwargs["decoder_attention_mask"] = torch.cat(
+                [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], 1))],
+                dim=-1,
+            )
+
+    return model_kwargs
+
+
+def _extract_past_from_model_output(outputs: ModelOutput, standardize_cache_format: bool = False):
+    past_key_values = None
+    if "past_key_values" in outputs:
+        past_key_values = outputs.past_key_values
+    elif "mems" in outputs:
+        past_key_values = outputs.mems
+    elif "past_buckets_states" in outputs:
+        past_key_values = outputs.past_buckets_states
+
+    # Bloom fix: standardizes the cache format when requested
+    # if standardize_cache_format and hasattr(self, "_convert_to_standard_cache"):
+    #     batch_size = outputs.logits.shape[0]
+    #     past_key_values = self._convert_to_standard_cache(past_key_values, batch_size=batch_size)
+    return past_key_values
+
 
 def ensemble_beam_search(
         input_ids: torch.LongTensor,
+        model: List[AutoModelForSeq2SeqLM],
         beam_scorer: BeamScorer,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        stopping_criteria: Optional[StoppingCriteriaList] = None,
         max_length: Optional[int] = None,
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[Union[int, List[int]]] = None,
@@ -145,6 +204,8 @@ def ensemble_beam_search(
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Wie alt bist du?']
         ```"""
+        generation_config = model.generation_config
+
         # init values
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
@@ -157,21 +218,21 @@ def ensemble_beam_search(
             stopping_criteria = validate_stopping_criteria(stopping_criteria, max_length)
         if len(stopping_criteria) == 0:
             warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
-        pad_token_id = pad_token_id if pad_token_id is not None else self.generation_config.pad_token_id
-        eos_token_id = eos_token_id if eos_token_id is not None else self.generation_config.eos_token_id
+        pad_token_id = pad_token_id if pad_token_id is not None else generation_config.pad_token_id
+        eos_token_id = eos_token_id if eos_token_id is not None else generation_config.eos_token_id
         if isinstance(eos_token_id, int):
             eos_token_id = [eos_token_id]
-        output_scores = output_scores if output_scores is not None else self.generation_config.output_scores
+        output_scores = output_scores if output_scores is not None else generation_config.output_scores
         output_attentions = (
-            output_attentions if output_attentions is not None else self.generation_config.output_attentions
+            output_attentions if output_attentions is not None else generation_config.output_attentions
         )
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.generation_config.output_hidden_states
+            output_hidden_states if output_hidden_states is not None else generation_config.output_hidden_states
         )
         return_dict_in_generate = (
             return_dict_in_generate
             if return_dict_in_generate is not None
-            else self.generation_config.return_dict_in_generate
+            else generation_config.return_dict_in_generate
         )
 
         batch_size = len(beam_scorer._beam_hyps)
@@ -193,8 +254,10 @@ def ensemble_beam_search(
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
 
+        config = model.config
+
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
-        if return_dict_in_generate and self.config.is_encoder_decoder:
+        if return_dict_in_generate and config.is_encoder_decoder:
             encoder_attentions = model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
@@ -223,10 +286,10 @@ def ensemble_beam_search(
             # TODO: do this separately for each model
             # TODO: add preprocessing abstraction
             # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
-            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             # TODO: once per model
-            outputs = self(
+            outputs = model(
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -258,15 +321,15 @@ def ensemble_beam_search(
                     scores += (next_token_scores_processed,)
                 if output_attentions:
                     decoder_attentions += (
-                        (outputs.decoder_attentions,) if self.config.is_encoder_decoder else (outputs.attentions,)
+                        (outputs.decoder_attentions,) if config.is_encoder_decoder else (outputs.attentions,)
                     )
-                    if self.config.is_encoder_decoder:
+                    if config.is_encoder_decoder:
                         cross_attentions += (outputs.cross_attentions,)
 
                 if output_hidden_states:
                     decoder_hidden_states += (
                         (outputs.decoder_hidden_states,)
-                        if self.config.is_encoder_decoder
+                        if config.is_encoder_decoder
                         else (outputs.hidden_states,)
                     )
 
@@ -301,13 +364,14 @@ def ensemble_beam_search(
 
             input_ids = torch.cat([input_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
-            model_kwargs = self._update_model_kwargs_for_generation(
-                outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
+            model_kwargs = _update_model_kwargs_for_generation(
+                outputs, model_kwargs, is_encoder_decoder=config.is_encoder_decoder
             )
             if model_kwargs["past_key_values"] is not None:
-                model_kwargs["past_key_values"] = self._temporary_reorder_cache(
-                    model_kwargs["past_key_values"], beam_idx
-                )
+                warnings.warn("past_key_values are not supported for ensemble generation")
+            #     model_kwargs["past_key_values"] = self._temporary_reorder_cache(
+            #         model_kwargs["past_key_values"], beam_idx
+            #     )
 
             if return_dict_in_generate and output_scores:
                 beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
@@ -337,7 +401,7 @@ def ensemble_beam_search(
             if not output_scores:
                 sequence_outputs["sequence_scores"] = None
 
-            if self.config.is_encoder_decoder:
+            if model.config.is_encoder_decoder:
                 return GenerateBeamEncoderDecoderOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
@@ -404,7 +468,7 @@ def main(args):
         )
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(input_ids, beam_scorer, logits_processor=logits_processor, **model_kwargs)
+        outputs = ensemble_beam_search(input_ids, model, beam_scorer, logits_processor=logits_processor, **model_kwargs)
 
         # translated_tokens = model.generate(
         #     **inputs, 
@@ -418,7 +482,7 @@ def main(args):
         # decode with the combined vocabulary
         result = tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
-        print(result.encode("utf-8"))
+        print(result)
 
 
 if __name__ == "__main__":
