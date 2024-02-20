@@ -32,3 +32,9 @@ model name -> params(
     - max length
     - etc
 )
+
+## Models
+
+- "facebook/m2m100_418M": 128104 tokens
+- "facebook/nllb-200-distilled-600M": 256204 tokens
+- "facebook/nllb-moe-54b": 256204 tokens 

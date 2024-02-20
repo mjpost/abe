@@ -7,17 +7,12 @@ import torch
 import warnings
 
 from typing import Optional, Union, List, Dict, Any
-from torch import nn
+from torch import nn, LongTensor
 
 from transformers import (
-    AutoTokenizer,
-    AutoModelForSeq2SeqLM,
-    LogitsProcessorList,
-    ForcedBOSTokenLogitsProcessor,
-    MinLengthLogitsProcessor,
+    LogitsProcessor,
     BeamSearchScorer,
     BeamScorer,
-    StoppingCriteriaList,
 )
 
 from transformers.generation.utils import (
@@ -223,8 +218,8 @@ def ensemble_beam_search(
                 UserWarning,
             )
             stopping_criteria = validate_stopping_criteria(stopping_criteria, max_length)
-        if len(stopping_criteria) == 0:
-            warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
+        # if len(stopping_criteria) == 0:
+        #     warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
         pad_token_id = pad_token_id if pad_token_id is not None else generation_config.pad_token_id
         eos_token_id = eos_token_id if eos_token_id is not None else generation_config.eos_token_id
         if isinstance(eos_token_id, int):
@@ -330,7 +325,6 @@ def ensemble_beam_search(
                 next_token_logits, dim=-1
             )  # (batch_size * num_beams, vocab_size)
 
-            # TODO: not sure where this is used, possible it could be deleted
             next_token_scores_processed = logits_processor(input_ids, next_token_scores)
             next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
                 next_token_scores_processed
@@ -394,8 +388,8 @@ def ensemble_beam_search(
             )
 
             # I don't know what this is so I'm commenting it out
-            if model_kwargs["past_key_values"] is not None:
-                warnings.warn(f"past_key_values are not supported for ensemble generation")
+            # if model_kwargs["past_key_values"] is not None:
+            #     warnings.warn(f"past_key_values are not supported for ensemble generation")
             #     model_kwargs["past_key_values"] = self._temporary_reorder_cache(
             #         model_kwargs["past_key_values"], beam_idx
             #     )
@@ -455,6 +449,15 @@ def ensemble_beam_search(
             return sequence_outputs["sequences"]
 
 
+class RandomNoiseLogitsProcessor(LogitsProcessor):
+    def __init__(self, noise):
+        self.noise = noise
+
+    def __call__(self, 
+                 input_ids: LongTensor,
+                 scores: torch.FloatTensor) -> torch.FloatTensor:
+            return scores + torch.randn_like(scores) * self.noise
+
 
 def main(args):
 
@@ -462,6 +465,10 @@ def main(args):
 
     tokenizer = bundle.tokenizer
     model = bundle.model
+
+    bundle.logits_processor.append(
+        RandomNoiseLogitsProcessor(1)
+    )
 
     for line in sys.stdin:
         line = line.rstrip()
@@ -515,7 +522,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", "-m", type=str, default="facebook/nllb-200-distilled-600M", help="Model name")
     parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
-    parser.add_argument("--num_beams", type=int, default=5, help="Number of beams for beam search")
+    parser.add_argument("--num-beams", "-b", type=int, default=5, help="Number of beams for beam search")
     args = parser.parse_args()
 
     main(args)

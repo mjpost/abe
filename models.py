@@ -53,9 +53,9 @@ class ModelBundle:
         self.bos_force_token = bos_force_token
 
         if self.bos_force_token is not None:
-            self.logits_processor = LogitsProcessorList(
-                [ ForcedBOSTokenLogitsProcessor(bos_force_token) ]
-            )
+            self.logits_processor.append(
+                ForcedBOSTokenLogitsProcessor(bos_force_token)
+        )
 
     def tokenize(self, line: str, return_tensors="pt"):
         inputs = self.tokenizer(line, return_tensors=return_tensors)
