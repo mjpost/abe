@@ -41,7 +41,8 @@ class Model:
                  max_length: Optional[int] = None,
                  pad_token_id: Optional[int] = None,
                  eos_token_id: Optional[Union[int, List[int]]] = None,
-                 bos_force_token: Optional[int] = None):
+                 bos_force_token: Optional[int] = None,
+                 **kwargs):
 
         self.model = model
         self.tokenizer = tokenizer
@@ -51,13 +52,30 @@ class Model:
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
         self.bos_force_token = bos_force_token
+        self.kwargs = kwargs
+
+        self.output_attentions = False
+        self.output_hidden_states = False
 
         if self.bos_force_token is not None:
             self.logits_processor.append(
                 ForcedBOSTokenLogitsProcessor(bos_force_token)
         )
+            
+        self.input = None
 
-    def tokenize(self, line: str, return_tensors="pt"):
-        inputs = self.tokenizer(line, return_tensors=return_tensors)
-        return inputs.input_ids
+    def set_input(self, line: str, return_tensors="pt"):
+        self.input = self.tokenizer(line, return_tensors=return_tensors)
+        return self.input.input_ids
+    
+    def prepare_inputs_for_generation(self, inputs, model_kwargs):
+        return self.model.prepare_inputs_for_generation(inputs, **model_kwargs)
 
+    def step(self, model_inputs):
+        outputs = self.model(
+            **model_inputs,
+            return_dict=True,
+            output_attentions=self.output_attentions,
+            output_hidden_states=self.output_hidden_states,
+        )
+        return outputs

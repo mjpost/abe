@@ -83,7 +83,7 @@ def _extract_past_from_model_output(outputs: ModelOutput, standardize_cache_form
 
 def ensemble_beam_search(
         input: str,
-        bundle: Model,
+        model: Model,
         beam_scorer: BeamScorer,
         max_length: Optional[int] = None,
         pad_token_id: Optional[int] = None,
@@ -104,15 +104,14 @@ def ensemble_beam_search(
 
         TODO:
         - [ ] Generalize to n models  
-
         """
 
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
 
-        encoder_input_ids = bundle.tokenize(input)
-        input_ids = torch.ones((num_beams, 1), device=bundle.model.device, dtype=torch.long)
-        input_ids = input_ids * bundle.model.config.decoder_start_token_id
+        encoder_input_ids = model.set_input(input)
+        input_ids = torch.ones((num_beams, 1), device=model.model.device, dtype=torch.long)
+        input_ids = input_ids * model.model.config.decoder_start_token_id
 
         batch_beam_size, cur_len = input_ids.shape
         if num_beams * batch_size != batch_beam_size:
@@ -122,18 +121,18 @@ def ensemble_beam_search(
 
         # add encoder_outputs to model keyword arguments
         model_kwargs = {
-            "encoder_outputs": bundle.model.get_encoder()(
+            "encoder_outputs": model.model.get_encoder()(
                 encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
             ),
         }
-        generation_config = copy.deepcopy(bundle.model.generation_config)
+        generation_config = copy.deepcopy(model.model.generation_config)
         model_kwargs = generation_config.update(**model_kwargs)  # All unused kwargs must be model kwargs
         generation_config.validate()
-        bundle.model._validate_model_kwargs(model_kwargs.copy())
+        model.model._validate_model_kwargs(model_kwargs.copy())
 
         # init values
-        logits_processor = bundle.logits_processor
-        stopping_criteria = bundle.stopping_criteria
+        logits_processor = model.logits_processor
+        stopping_criteria = model.stopping_criteria
         if max_length is not None:
             warnings.warn(
                 "`max_length` is deprecated in this function, use"
@@ -141,6 +140,7 @@ def ensemble_beam_search(
                 UserWarning,
             )
             stopping_criteria = validate_stopping_criteria(stopping_criteria, max_length)
+
         # if len(stopping_criteria) == 0:
         #     warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
         pad_token_id = pad_token_id if pad_token_id is not None else generation_config.pad_token_id
@@ -169,7 +169,7 @@ def ensemble_beam_search(
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
 
-        config = bundle.model.config
+        config = model.model.config
 
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
         if return_dict_in_generate and config.is_encoder_decoder:
@@ -201,15 +201,10 @@ def ensemble_beam_search(
             # TODO: do this separately for each model
             # TODO: add preprocessing abstraction
             # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
-            model_inputs = bundle.model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs = model.prepare_inputs_for_generation(input_ids, model_kwargs)
 
             # TODO: once per model
-            outputs = bundle.model(
-                **model_inputs,
-                return_dict=True,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-            )
+            outputs = model.step(model_inputs)
 
             if synced_gpus and this_peer_finished:
                 cur_len = cur_len + 1
@@ -364,6 +359,8 @@ def main(args):
         model2.logits_processor.append(
             RandomNoiseLogitsProcessor(args.noise)
         )
+
+    models = [model, model2]
 
     for line in sys.stdin:
         line = line.rstrip()
