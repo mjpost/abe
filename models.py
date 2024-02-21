@@ -18,11 +18,13 @@ def get_model_bundle(
         model_name: str,
         target_language: Optional[str] = None,
         ) -> "Model":
+    
+    target_language = target_language or "fra_Latn"
     if model_name == "facebook/nllb-200-distilled-600M":
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
         tokenizer = NllbTokenizer.from_pretrained(model_name)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        bos_token_id = tokenizer.lang_code_to_id["fra_Latn"]
+        bos_token_id = tokenizer.lang_code_to_id[target_language]
 
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
     elif model_name == "facebook/m2m100_418M":

@@ -17,6 +17,9 @@ Testing:
     # This adds noise to the logits of the first model, so interpolotion makes a bit more sense
     echo "This is a test." | ./ensemble.py -b 10 --noise 2
 
+    # German
+    echo "This is a test." | ./ensemble.py -b 5 -t deu_Latn
+
 ## TODO
 - [x] Ensemble the same model twice (passed in as two models)
 - [ ] Ensemble two models with a shared vocabulary

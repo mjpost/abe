@@ -277,8 +277,8 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
-    model = get_model_bundle(args.model_name)
-    model2 = get_model_bundle(args.model_name)
+    model = get_model_bundle(args.model_name, target_language=args.target_lang)
+    model2 = get_model_bundle(args.model_name, target_language=args.target_lang)
 
     if args.noise is not None:
         model.logits_processor.append(
