@@ -35,7 +35,6 @@ def ensemble_beam_search(
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
         return_dict_in_generate: Optional[bool] = None,
-        synced_gpus: bool = False,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
         r"""
         Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
@@ -54,6 +53,8 @@ def ensemble_beam_search(
         num_beams = beam_scorer.num_beams
 
         for model in models:
+            # Initialize each model with the input
+            # TODO: maybe this is where the first decoder token should also be set?
             model.set_input(input, num_beams=num_beams)
 
         # TODO: this has to be in the shared vocabulary space
@@ -77,7 +78,8 @@ def ensemble_beam_search(
             )
             stopping_criteria = validate_stopping_criteria(stopping_criteria, max_length)
 
-        vocab = SharedVocab(model)
+        # Construct the shared model vocabulary. The beam works in this space.
+        vocab = SharedVocab([model.get_vocab() for model in models])
 
         # if len(stopping_criteria) == 0:
         #     warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
@@ -99,14 +101,12 @@ def ensemble_beam_search(
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
 
-        config = model.model.config
-
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
-        if return_dict_in_generate and config.is_encoder_decoder:
-            encoder_attentions = model.model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
-            encoder_hidden_states = (
-                model.model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
-            )
+        # if return_dict_in_generate and config.is_encoder_decoder:
+        #     encoder_attentions = model.model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
+        #     encoder_hidden_states = (
+        #         model.model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
+        #     )
 
         # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
         # of the first beam are considered to avoid sampling the exact same tokens across all beams.
@@ -114,16 +114,21 @@ def ensemble_beam_search(
         beam_scores[:, 1:] = -1e9
         beam_scores = beam_scores.view((batch_size * num_beams,))
 
-        this_peer_finished = False  # used by synced_gpus only
-
         decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
         while True:
-            # TODO: do this separately for each model
             # TODO: add preprocessing abstraction
-            # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
+
+            # transform each row of output_ids into tokens and print
+            # print("BEAM")
+            # for i in range(output_ids.shape[0]):
+            #     tokens = model.tokenizer.decode(output_ids[i].tolist())
+            #     print("OUTPUT", beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
+            # print()
 
             scores = []
-            for model in models:
+            for modeli, model in enumerate(models):
+
+                # TODO: the model needs to project these from the shared vocab to its personal one
                 model_inputs = model.prepare_inputs_for_generation(output_ids)
 
                 # Take the next step of the model
@@ -147,21 +152,25 @@ def ensemble_beam_search(
             Not sure yet how to handle the fact that there will be different output lengths for each model.
             """
 
-            # average the scores
-            scores = torch.stack(scores)
-            scores = torch.mean(scores, dim=0)
-            next_token_scores = scores
-
-            # log softmax the scores
+            ## 1. Project scores from each model into the shared vocabulary space and interpolate
+            # projected_scores = [vocab.project_scores(s, i) for i, s in enumerate(scores)]
+            projected_scores = torch.stack(scores, dim=0)
+            projected_scores = torch.mean(projected_scores, dim=0)
+            next_token_scores = projected_scores
             next_token_scores = torch.log(next_token_scores)        
-
             next_token_scores = next_token_scores + beam_scores[:, None].expand_as(
                 next_token_scores
             )
 
-            ## 
-            ## TODO (main): merge the outputs, create synced / unsynced beam item abstractions!
-            ## 
+            ## 2. Make the selection for each beam item
+
+
+            ## 3. Advance all models so that the beam is synchronized across tokenizations
+
+
+
+
+            # log softmax the scores
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
@@ -194,7 +203,8 @@ def ensemble_beam_search(
             next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
             next_tokens = next_tokens % vocab_size
 
-            # stateless
+
+            # Why does the beam scorer care about the decoder prompt length?
             beam_outputs = beam_scorer.process(
                 output_ids,
                 next_token_scores,
@@ -211,6 +221,7 @@ def ensemble_beam_search(
             beam_idx = beam_outputs["next_beam_indices"]
 
             # extend the sequence of generated output tokens
+            # The output IDs are in the shared vocabulary space; each model will map them back to their own vocabulary space
             output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
             # I don't know what this is so I'm commenting it out
@@ -227,10 +238,7 @@ def ensemble_beam_search(
             cur_len = cur_len + 1
 
             if beam_scorer.is_done or stopping_criteria(output_ids, scores):
-                if not synced_gpus:
-                    break
-                else:
-                    this_peer_finished = True
+                break
 
         sequence_outputs = beam_scorer.finalize(
             output_ids,
@@ -318,7 +326,7 @@ def main(args):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-names", "-m", type=str, nargs=2, default=["facebook/m2m100_418M", "facebook/m2m100_418M"], help="Model names")
+    parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/m2m100_418M", "facebook/m2m100_418M"], help="Model names")
     parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=5, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")

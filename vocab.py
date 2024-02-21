@@ -1,18 +1,39 @@
-class SharedVocab:
-    def __init__(self, models):
-        self.models = models
-        self.pad_token_id = 0
-        self.eos_token_id = 1
+from typing import List
+from models import Model
 
-        self.ids_to_tokens = {
-            0: "<pad>",
-            1: "<eos>",
-        }
-        self.tokens_to_ids = {
-            "<pad>": 0,
-            "<eos>": 1,
-        }
+class SharedVocab:
+    def __init__(self, vocabs: List):
+        self.tokens_to_ids = {}
+        self.ids_to_tokens = {}
+
+        self.add_token("<pad>")
+        self.add_token("<bos>")
+        self.add_token("<eos>")
+
         self.vocabs = []
+        for vocab in vocabs:
+            self.add_vocab(vocab)
+
+    @property
+    def pad_token_id(self):
+        return self.tokens_to_ids["<pad>"]
+
+    @property
+    def bos_token_id(self):
+        return self.tokens_to_ids["<bos>"]
+    
+    @property
+    def eos_token_id(self):
+        return self.tokens_to_ids["<eos>"]
+
+    def add_token(self, token):
+        if token not in self.tokens_to_ids:
+            # Create a new entry
+            new_token_id = len(self.tokens_to_ids)
+            self.tokens_to_ids[token] = new_token_id
+            self.ids_to_tokens[new_token_id] = token
+
+        return self.tokens_to_ids[token]
 
     def add_vocab(self, vocab):
         """

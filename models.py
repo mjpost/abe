@@ -1,4 +1,5 @@
 import copy
+import sys
 import torch
 
 from typing import Optional, Union, List
@@ -18,7 +19,9 @@ def get_model_bundle(
         model_name: str,
         target_language: Optional[str] = None,
         ) -> "Model":
-    
+
+    print(f"Instantiating model {model_name}", file=sys.stderr)
+
     target_language = target_language or "fra_Latn"
     if model_name == "facebook/nllb-200-distilled-600M":
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
@@ -29,14 +32,14 @@ def get_model_bundle(
 
     elif model_name == "facebook/m2m100_418M":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-        tokenizer = M2M100Tokenizer.from_pretrained(model_name)
+        tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[target_language]
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_1.2B":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-        tokenizer = M2M100Tokenizer.from_pretrained(model_name)
+        tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[target_language]
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
@@ -81,15 +84,25 @@ class Model:
             
         self.input = None
 
+    def get_vocab(self):
+        return self.tokenizer.get_vocab()
+
     def set_input(self, line: str, num_beams, return_tensors="pt"):
+        """
+        Tokenize and encode the input. For seq2seq models, store the encoder outputs
+        for passing in the generation loop in step().
+        """
         self.input = self.tokenizer(line, return_tensors=return_tensors)
         encoder_input_ids = self.input.input_ids
 
+        # Encoder outputs only need to be set once, then stored
         self.model_kwargs = {
             "encoder_outputs": self.model.get_encoder()(
                 encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
             ),
         }
+
+        # Not sure all this garbage is needed.
         generation_config = copy.deepcopy(self.model.generation_config)
         self.model_kwargs = generation_config.update(**self.model_kwargs)  # All unused kwargs must be model kwargs
         generation_config.validate()
@@ -97,10 +110,16 @@ class Model:
 
         return encoder_input_ids
     
-    def prepare_inputs_for_generation(self, inputs):
-        return self.model.prepare_inputs_for_generation(inputs, **self.model_kwargs)
+    def prepare_inputs_for_generation(self, outputs):
+        """
+        This is called at every step. It provides a way to modify the inputs before they are passed to the model.
+        """
+        return self.model.prepare_inputs_for_generation(outputs, **self.model_kwargs)
 
     def step(self, model_inputs):
+        """
+        Takes a step in the generation loop.
+        """
         outputs = self.model(
             **model_inputs,
             return_dict=True,
