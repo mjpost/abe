@@ -122,6 +122,7 @@ def ensemble_beam_search(
             # TODO: add preprocessing abstraction
             # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
 
+            scores = []
             for model in models:
                 model_inputs = model.prepare_inputs_for_generation(output_ids)
 
@@ -133,10 +134,19 @@ def ensemble_beam_search(
                     next_token_logits, dim=-1
                 )  # (batch_size * num_beams, vocab_size)
 
-                next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
-                next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
-                    next_token_scores_processed
-                )
+                # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
+                scores.append(next_token_scores)
+
+            # average the scores
+            scores = torch.stack(scores)
+            print("\n".join(map(str, [score[0][0:5] for score in scores])))
+            scores = torch.mean(scores, dim=0)
+            print("->", scores[0][0:5])
+            next_token_scores = scores
+
+            next_token_scores = next_token_scores + beam_scores[:, None].expand_as(
+                next_token_scores
+            )
 
             ## 
             ## TODO (main): merge the outputs, create synced / unsynced beam item abstractions!
