@@ -128,7 +128,8 @@ def ensemble_beam_search(
                 outputs = model.step(model_inputs)
 
                 next_token_logits = outputs.logits[:, -1, :]
-                next_token_scores = nn.functional.log_softmax(
+                next_token_logits = model.logits_processor(output_ids, next_token_logits)
+                next_token_scores = nn.functional.softmax(
                     next_token_logits, dim=-1
                 )  # (batch_size * num_beams, vocab_size)
 
