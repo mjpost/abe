@@ -139,10 +139,11 @@ def ensemble_beam_search(
 
             # average the scores
             scores = torch.stack(scores)
-            print("\n".join(map(str, [score[0][0:5] for score in scores])))
             scores = torch.mean(scores, dim=0)
-            print("->", scores[0][0:5])
             next_token_scores = scores
+
+            # log softmax the scores
+            next_token_scores = torch.log(next_token_scores)        
 
             next_token_scores = next_token_scores + beam_scores[:, None].expand_as(
                 next_token_scores
