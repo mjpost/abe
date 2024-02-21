@@ -25,22 +25,20 @@ def get_model_bundle(
         tokenizer = NllbTokenizer.from_pretrained(model_name)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[target_language]
-
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
+
     elif model_name == "facebook/m2m100_418M":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
         tokenizer = M2M100Tokenizer.from_pretrained(model_name)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
-        bos_token_id = tokenizer.lang_code_to_id["fr"]
-
+        bos_token_id = tokenizer.lang_code_to_id[target_language]
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_1.2B":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
         tokenizer = M2M100Tokenizer.from_pretrained(model_name)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
-        bos_token_id = tokenizer.lang_code_to_id["fr"]
-
+        bos_token_id = tokenizer.lang_code_to_id[target_language]
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     else:
