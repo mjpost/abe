@@ -34,6 +34,15 @@ def get_model_bundle(
         bos_token_id = tokenizer.lang_code_to_id["fr"]
 
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+
+    elif model_name == "facebook/m2m100_1.2B":
+        from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
+        tokenizer = M2M100Tokenizer.from_pretrained(model_name)
+        model = M2M100ForConditionalGeneration.from_pretrained(model_name)
+        bos_token_id = tokenizer.lang_code_to_id["fr"]
+
+        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
