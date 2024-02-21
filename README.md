@@ -1,10 +1,26 @@
 The code for ensembling is brewing in `ensemble.py`.
 I (MJP) have copied stub code there which we simply need to extend.
 
+## Setup
+
+Installation:
+
+    python3 -m venv venv
+    . venv/bin/activate
+    pip install -r requirements.txt
+
+Testing:
+
+    # This will interpolate two identical models (nllb)
+    echo "This is a test." | ./ensemble.py -b 10
+
+    # This adds noise to the logits of the first model, so interpolotion makes a bit more sense
+    echo "This is a test." | ./ensemble.py -b 10 --noise 2
+
 ## TODO
-- [ ] Ensemble the same model twice (passed in as two models)
+- [x] Ensemble the same model twice (passed in as two models)
 - [ ] Ensemble two models with a shared vocabulary
-- [ ] Build a model bundle class
+- [x] Build a model bundle class
 - [ ] Ensemble two models with different vocabularies
 - [ ] Add script to convert Marian models to Huggingface
 - [ ] Create a Marian model class for HF (maybe already exists?)
