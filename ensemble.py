@@ -126,6 +126,7 @@ def ensemble_beam_search(
             for model in models:
                 model_inputs = model.prepare_inputs_for_generation(output_ids)
 
+                # Take the next step of the model
                 outputs = model.step(model_inputs)
 
                 next_token_logits = outputs.logits[:, -1, :]
@@ -136,6 +137,15 @@ def ensemble_beam_search(
 
                 # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
                 scores.append(next_token_scores)
+
+            """
+            TODO: merge scores from different vocabularies
+            Each entry in `scores` is a tensor of shape (batch_size * num_beams, vocab_size).
+            We need to project each, using the `SharedVocab` object, into the shared vocabulary space.
+            This gives the ID in each original vocabulary that can be used to directly interpolate.
+            We then fast-forward multi-token models to catch up.
+            Not sure yet how to handle the fact that there will be different output lengths for each model.
+            """
 
             # average the scores
             scores = torch.stack(scores)
@@ -277,15 +287,14 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
-    model = get_model_bundle(args.model_name, target_language=args.target_lang)
-    model2 = get_model_bundle(args.model_name, target_language=args.target_lang)
+    models = []
+    for model_name in args.model_names:
+        models.append(get_model_bundle(model_name, target_language=args.target_lang))
 
     if args.noise is not None:
-        model.logits_processor.append(
+        models[0].logits_processor.append(
             RandomNoiseLogitsProcessor(args.noise)
         )
-
-    models = [model, model2]
 
     for line in sys.stdin:
         line = line.rstrip()
@@ -294,14 +303,14 @@ def main(args):
         beam_scorer = BeamSearchScorer(
             batch_size=1,
             num_beams=args.num_beams,
-            device=model.model.device,
+            device=models[0].model.device,
         )
 
         # normally you would now call beam search, but we need to implement it
         outputs = ensemble_beam_search(line, models, beam_scorer, max_length=args.max_output_tokens)
 
         # decode with the combined vocabulary
-        result = model.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+        result = models[0].tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
         print(result)
 
@@ -309,7 +318,7 @@ def main(args):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-name", "-m", type=str, default="facebook/nllb-200-distilled-600M", help="Model name")
+    parser.add_argument("--model-names", "-m", type=str, nargs=2, default=["facebook/m2m100_418M", "facebook/m2m100_418M"], help="Model names")
     parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=5, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
