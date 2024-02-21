@@ -25,7 +25,7 @@ from transformers.generation.stopping_criteria import validate_stopping_criteria
 from models import get_model_bundle, Model
 from vocab import SharedVocab
 
-
+@torch.no_grad()
 def ensemble_beam_search(
         input: str,
         models: List[Model],
