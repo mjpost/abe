@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
-import copy
 import sys
 import torch
-import warnings
 
 from typing import Optional, Union, List, Dict, Any
 from torch import nn, LongTensor
@@ -13,6 +11,7 @@ from transformers import (
     LogitsProcessor,
     BeamSearchScorer,
     BeamScorer,
+    MaxLengthCriteria,
 )
 
 from transformers.generation.utils import (
@@ -20,8 +19,6 @@ from transformers.generation.utils import (
     GenerateBeamDecoderOnlyOutput, 
     GenerateBeamEncoderDecoderOutput,
 )
-from transformers.generation.stopping_criteria import validate_stopping_criteria
-
 from models import get_model_bundle, Model
 from vocab import SharedVocab
 
@@ -49,6 +46,7 @@ def ensemble_beam_search(
         """
 
         model = models[0]
+        num_models = len(models)
 
         num_beams = beam_scorer.num_beams
 
@@ -57,9 +55,12 @@ def ensemble_beam_search(
             # TODO: maybe this is where the first decoder token should also be set?
             model.set_input(input, num_beams=num_beams)
 
-        # TODO: this has to be in the shared vocabulary space
+        # This is used to store the canonical, shared output
         output_ids = torch.ones((num_beams, 1), device=model.model.device, dtype=torch.long)
-        output_ids = output_ids * model.model.config.decoder_start_token_id
+
+        # These are used to store the separate tokenizations from each model
+        model_output_ids = torch.ones((num_models, num_beams, 1), device=model.model.device, dtype=torch.long)
+        model_output_ids = output_ids * model.model.config.decoder_start_token_id
 
         batch_size = len(beam_scorer._beam_hyps)
         batch_beam_size, cur_len = output_ids.shape
@@ -68,15 +69,7 @@ def ensemble_beam_search(
                 f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
             )        
 
-        # init values
-        stopping_criteria = model.stopping_criteria
-        if max_length is not None:
-            warnings.warn(
-                "`max_length` is deprecated in this function, use"
-                " `stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_length)])` instead.",
-                UserWarning,
-            )
-            stopping_criteria = validate_stopping_criteria(stopping_criteria, max_length)
+        stopping_criteria = MaxLengthCriteria(max_length=max_length)
 
         # Construct the shared model vocabulary. The beam works in this space.
         vocab = SharedVocab([model.get_vocab() for model in models])
@@ -202,7 +195,6 @@ def ensemble_beam_search(
 
             next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
             next_tokens = next_tokens % vocab_size
-
 
             # Why does the beam scorer care about the decoder prompt length?
             beam_outputs = beam_scorer.process(
