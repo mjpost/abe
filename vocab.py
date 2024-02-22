@@ -1,4 +1,6 @@
 from typing import List
+
+import numpy as np
 from models import Model
 
 class SharedVocab:
@@ -42,6 +44,7 @@ class SharedVocab:
         # Add a copy of the vocab to the list of vocabs
         self.vocabs.append(vocab.copy())
 
+        self.projections.append(np.full(len(vocab), -1, dtype=int))
         for token in vocab:
             if token not in self.tokens_to_ids:
                 # Create a new entry
@@ -52,6 +55,13 @@ class SharedVocab:
         for token in self.tokens_to_ids.keys():
             if token not in vocab:
                 pass
+
+    def project_scores(self, scores, vocab_index):
+        """
+        Project scores from the input vocabulary specified by {vocab_index} to the shared vocab
+        """
+        
+
 
     def finalize(self):
         """

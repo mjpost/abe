@@ -47,6 +47,7 @@ def ensemble_beam_search(
 
         model = models[0]
         num_models = len(models)
+        device = model.model.device
 
         num_beams = beam_scorer.num_beams
 
@@ -57,10 +58,12 @@ def ensemble_beam_search(
 
         # This is used to store the canonical, shared output
         output_ids = torch.ones((num_beams, 1), device=model.model.device, dtype=torch.long)
+        output_ids = output_ids * model.model.config.decoder_start_token_id
 
-        # These are used to store the separate tokenizations from each model
-        model_output_ids = torch.ones((num_models, num_beams, 1), device=model.model.device, dtype=torch.long)
-        model_output_ids = output_ids * model.model.config.decoder_start_token_id
+         # These are used to store the separate tokenizations from each model
+        model_output_ids = [torch.ones((num_beams, 1), device=device, dtype=torch.long) for _ in models]
+        for m in model_output_ids:
+            m = m * model.model.config.decoder_start_token_id
 
         batch_size = len(beam_scorer._beam_hyps)
         batch_beam_size, cur_len = output_ids.shape
@@ -120,9 +123,7 @@ def ensemble_beam_search(
 
             scores = []
             for modeli, model in enumerate(models):
-
-                # TODO: the model needs to project these from the shared vocab to its personal one
-                model_inputs = model.prepare_inputs_for_generation(output_ids)
+                model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
 
                 # Take the next step of the model
                 outputs = model.step(model_inputs)
@@ -146,7 +147,7 @@ def ensemble_beam_search(
             """
 
             ## 1. Project scores from each model into the shared vocabulary space and interpolate
-            # projected_scores = [vocab.project_scores(s, i) for i, s in enumerate(scores)]
+            projected_scores = [vocab.project_scores(s, i) for i, s in enumerate(scores)]
             projected_scores = torch.stack(scores, dim=0)
             projected_scores = torch.mean(projected_scores, dim=0)
             next_token_scores = projected_scores
@@ -320,7 +321,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/m2m100_418M", "facebook/m2m100_418M"], help="Model names")
     parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
-    parser.add_argument("--num-beams", "-b", type=int, default=5, help="Number of beams for beam search")
+    parser.add_argument("--num-beams", "-b", type=int, default=1, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
     parser.add_argument("--max-output-tokens", "-l", type=int, default=30, help="Maximum number of output tokens")
     args = parser.parse_args()
