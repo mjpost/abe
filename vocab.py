@@ -91,7 +91,8 @@ class SharedVocab:
             for vocab_i, vocab in enumerate(self.vocabs):
                 if token not in vocab:
                     # Tokenize the token using the vocab
-                    self.shared_tokenization[(vocab_i, token_id)] = self.tokenizers[vocab_i](token)
+                    self.shared_tokenization[(vocab_i, token_id)] = self.tokenizers[vocab_i].encode(token, add_special_tokens=False)
+                    # print(f"TOK({token}) in vocab {vocab_i} is {self.shared_tokenization[(vocab_i, token_id)]}")
 
     def project_into(self, private_scores, vocab_index) -> List[float]:
         """
@@ -114,27 +115,17 @@ if __name__ == "__main__":
     import sys
     import argparse
 
-    from models import get_model_bundle
+    from transformers import AutoTokenizer
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/m2m100_418M", "facebook/nllb-200-distilled-600M"], help="Model names")
     parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
     args = parser.parse_args()
 
-    tokenizers = []
-    for model in args.model_names:
-        if model == "facebook/nllb-200-distilled-600M":
-            from transformers import NllbTokenizer
-            tokenizer = NllbTokenizer.from_pretrained(model)
-            tokenizers.append(tokenizer)
-        elif model.startswith("facebook/m2m100"):
-            from transformers import M2M100Tokenizer
-            tokenizer = M2M100Tokenizer.from_pretrained(model)
-            tokenizers.append(tokenizer)
-        else:
-            raise ValueError(f"Unknown model name: {model}")
+    tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in args.model_names]
+
 
     vocab = SharedVocab(tokenizers)
     for name, tokenizer in zip(args.model_names, tokenizers):
         print(len(tokenizer.get_vocab()), name, sep="\t")
-    print(len(vocab), "shared")
+    print(len(vocab), "shared", sep="\t")
