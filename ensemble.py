@@ -26,8 +26,8 @@ from vocab import SharedVocab
 def ensemble_beam_search(
         input: str,
         models: List[Model],
-        beam_scorer: BeamScorer,
         max_length: Optional[int] = None,
+        num_beams: int = 1,
         output_scores: Optional[bool] = True,
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
@@ -45,11 +45,16 @@ def ensemble_beam_search(
         - [ ] Generalize to n models  
         """
 
-        model = models[0]
         num_models = len(models)
-        device = model.model.device
+        device = models[0].model.device
 
-        num_beams = beam_scorer.num_beams
+        # instantiate beam scorer
+        if num_beams > 1:
+            beam_scorer = BeamSearchScorer(
+                batch_size=1,
+                num_beams=args.num_beams,
+                device=device,
+            )
 
         for model in models:
             # Initialize each model with the input
@@ -65,7 +70,7 @@ def ensemble_beam_search(
         for m in model_output_ids:
             m = m * model.model.config.decoder_start_token_id
 
-        batch_size = len(beam_scorer._beam_hyps)
+        batch_size = 1  # len(beam_scorer._beam_hyps)
         batch_beam_size, cur_len = output_ids.shape
         if num_beams * batch_size != batch_beam_size:
             raise ValueError(
@@ -75,7 +80,7 @@ def ensemble_beam_search(
         stopping_criteria = MaxLengthCriteria(max_length=max_length)
 
         # Construct the shared model vocabulary. The beam works in this space.
-        vocab = SharedVocab([model.get_vocab() for model in models])
+        vocab = SharedVocab([model.tokenizer for model in models])
 
         # if len(stopping_criteria) == 0:
         #     warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
@@ -115,27 +120,32 @@ def ensemble_beam_search(
             # TODO: add preprocessing abstraction
 
             # transform each row of output_ids into tokens and print
-            # print("BEAM")
-            # for i in range(output_ids.shape[0]):
-            #     tokens = model.tokenizer.decode(output_ids[i].tolist())
-            #     print("OUTPUT", beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
-            # print()
+            print("BEAM")
+            for i in range(output_ids.shape[0]):
+                tokens = vocab.decode(output_ids[i].tolist())
+                print(i, beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
+            print()
 
+            # Take the next step of each model
             scores = []
             for modeli, model in enumerate(models):
+                # Give the model its current outputs
                 model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
 
-                # Take the next step of the model
-                outputs = model.step(model_inputs)
+                print("* MODEL", modeli)
 
+                # Step
+                outputs = model.step(model_inputs)
                 next_token_logits = outputs.logits[:, -1, :]
-                next_token_logits = model.logits_processor(output_ids, next_token_logits)
+                print("* OUTPUTS.LOGITS", next_token_logits.shape)
+                print("* LOGITS", model.logits_processor)
+                next_token_logits = model.logits_processor(model_output_ids[modeli], next_token_logits)
                 next_token_scores = nn.functional.softmax(
                     next_token_logits, dim=-1
                 )  # (batch_size * num_beams, vocab_size)
 
                 # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
-                scores.append(next_token_scores)
+                scores.append(vocab.project_into(modeli, next_token_scores))
 
             """
             TODO: merge scores from different vocabularies
@@ -146,12 +156,10 @@ def ensemble_beam_search(
             Not sure yet how to handle the fact that there will be different output lengths for each model.
             """
 
-            ## 1. Project scores from each model into the shared vocabulary space and interpolate
-            projected_scores = [vocab.project_scores(s, i) for i, s in enumerate(scores)]
+            ## Project scores from each model into the shared vocabulary space for interpolation
             projected_scores = torch.stack(scores, dim=0)
-            projected_scores = torch.mean(projected_scores, dim=0)
-            next_token_scores = projected_scores
-            next_token_scores = torch.log(next_token_scores)        
+            next_token_scores = torch.mean(projected_scores, dim=0)
+            next_token_scores = torch.log(next_token_scores)
             next_token_scores = next_token_scores + beam_scores[:, None].expand_as(
                 next_token_scores
             )
@@ -198,16 +206,24 @@ def ensemble_beam_search(
             next_tokens = next_tokens % vocab_size
 
             # Why does the beam scorer care about the decoder prompt length?
-            beam_outputs = beam_scorer.process(
-                output_ids,
-                next_token_scores,
-                next_tokens,
-                next_indices,
-                pad_token_id=pad_token_id,
-                eos_token_id=eos_token_id,
-                beam_indices=beam_indices,
-                decoder_prompt_len=decoder_prompt_len,
-            )
+            if num_beams > 1:
+                beam_outputs = beam_scorer.process(
+                    output_ids,
+                    next_token_scores,
+                    next_tokens,
+                    next_indices,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_token_id,
+                    beam_indices=beam_indices,
+                    decoder_prompt_len=decoder_prompt_len,
+                )
+            else:
+                beam_outputs = {
+                    "next_beam_scores": next_token_scores,
+                    "next_beam_tokens": next_tokens,
+                    "next_beam_indices": [0]
+                }
+
 
             beam_scores = beam_outputs["next_beam_scores"]
             beam_next_tokens = beam_outputs["next_beam_tokens"]
@@ -217,7 +233,7 @@ def ensemble_beam_search(
             # The output IDs are in the shared vocabulary space; each model will map them back to their own vocabulary space
             output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
-            # I don't know what this is so I'm commenting it out
+            # MJP: I don't know what this is so I'm commenting it out
             # if model_kwargs["past_key_values"] is not None:
             #     warnings.warn(f"past_key_values are not supported for ensemble generation")
             #     model_kwargs["past_key_values"] = self._temporary_reorder_cache(
@@ -230,7 +246,50 @@ def ensemble_beam_search(
             # increase cur_len
             cur_len = cur_len + 1
 
-            if beam_scorer.is_done or stopping_criteria(output_ids, scores):
+            ## Project the selected token(s) back into each model's space, and take the requisite number of steps
+            # for each beam item, get the last token
+            for beam_i, token_id in enumerate(beam_next_tokens):
+                # For each model, tokenize that token using its vocabulary, then take the requisite steps
+                for modeli, model in enumerate(models):
+                    token_seq = vocab.project_outta(token_id, modeli)
+                    for token in token_seq:
+                        # add the token to the outputs
+                        model_output_ids[modeli] = torch.cat([[model_output_ids][beam_i, :], token], dim=-1)
+
+                        # call prepare
+                        model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
+
+                        # step, force-decoding to the token
+                        outputs = model.step(model_inputs, force_token_id=next_token)
+                        next_token_logits = outputs.logits[:, -1, :]
+                        next_token_logits = model.logits_processor(output_ids, next_token_logits)
+                        next_token_scores = nn.functional.softmax(
+                            next_token_logits, dim=-1
+                        )  # (batch_size * num_beams, vocab_size)
+
+                        model_output_ids[modeli][beam_i, cur_len] = token
+
+                    # project the token back into the model's space
+                    token_id = vocab.project_token(token_id, modeli)
+                    # add the token to the model's output
+                    model_output_ids[modeli][beam_i, cur_len] = token_id
+
+
+                # for modeli, model in enumerate(models):
+                    # Give the model its current outputs
+                    # model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
+
+                    # # Step
+                    # outputs = model.step(model_inputs)
+
+                    # next_token_logits = outputs.logits[:, -1, :]
+                    # next_token_logits = model.logits_processor(output_ids, next_token_logits)
+                    # next_token_scores = nn.functional.softmax(
+                    #     next_token_logits, dim=-1
+                    # )  # (batch_size * num_beams, vocab_size)
+
+            # Temporary fix for when beam size == 1
+            if (beam_scorer is not None and beam_scorer.is_done) or (num_beams == 1 and output_ids[0, -1] == eos_token_id) or stopping_criteria(output_ids, scores):
                 break
 
         sequence_outputs = beam_scorer.finalize(
@@ -297,18 +356,13 @@ def main(args):
             RandomNoiseLogitsProcessor(args.noise)
         )
 
+    num_beams = args.num_beams
+
     for line in sys.stdin:
         line = line.rstrip()
 
-        # instantiate beam scorer
-        beam_scorer = BeamSearchScorer(
-            batch_size=1,
-            num_beams=args.num_beams,
-            device=models[0].model.device,
-        )
-
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, models, beam_scorer, max_length=args.max_output_tokens)
+        outputs = ensemble_beam_search(line, models, num_beams=args.num_beams, max_length=args.max_output_tokens)
 
         # decode with the combined vocabulary
         result = models[0].tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
@@ -319,8 +373,8 @@ def main(args):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/m2m100_418M", "facebook/m2m100_418M"], help="Model names")
-    parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
+    parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
+    parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=1, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
     parser.add_argument("--max-output-tokens", "-l", type=int, default=30, help="Maximum number of output tokens")

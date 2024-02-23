@@ -17,24 +17,29 @@ from transformers.generation.utils import (
 
 def get_model_bundle(
         model_name: str,
-        target_language: Optional[str] = None,
+        target_language: Optional[str] = "fr",
         ) -> "Model":
 
     print(f"Instantiating model {model_name}", file=sys.stderr)
 
-    target_language = target_language or "fra_Latn"
     if model_name == "facebook/nllb-200-distilled-600M":
+        lang_map = {
+            "fr": "fra_Latn",
+        }
+
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
         tokenizer = NllbTokenizer.from_pretrained(model_name)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        bos_token_id = tokenizer.lang_code_to_id[target_language]
-        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id)
+        bos_token_id = tokenizer.lang_code_to_id[lang_map[target_language]]
+        print("*", model_name, bos_token_id, file=sys.stderr)
+        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_418M":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
         tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[target_language]
+        print("*", model_name, bos_token_id, file=sys.stderr)
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_1.2B":
@@ -42,6 +47,7 @@ def get_model_bundle(
         tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[target_language]
+        print("*", model_name, bos_token_id, file=sys.stderr)
         return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     else:
@@ -52,22 +58,14 @@ class Model:
     def __init__(self,
                  model: Optional[PreTrainedModel] = None,
                  tokenizer: Optional[PreTrainedTokenizer] = None,
-                 logits_processor: Optional[LogitsProcessorList] = LogitsProcessorList(),
-                 stopping_criteria: Optional[StoppingCriteriaList] = StoppingCriteriaList(),
                  max_length: Optional[int] = None,
-                 pad_token_id: Optional[int] = None,
-                 eos_token_id: Optional[Union[int, List[int]]] = None,
                  bos_force_token: Optional[int] = None,
                  is_encoder_decoder: Optional[bool] = False,
                  **kwargs):
 
         self.model = model
         self.tokenizer = tokenizer
-        self.logits_processor = logits_processor
-        self.stopping_criteria = stopping_criteria
         self.max_length = max_length
-        self.pad_token_id = pad_token_id
-        self.eos_token_id = eos_token_id
         self.bos_force_token = bos_force_token
         self.model_kwargs = kwargs
 
@@ -77,6 +75,7 @@ class Model:
         self.output_attentions = False
         self.output_hidden_states = False
 
+        self.logits_processor = LogitsProcessorList()
         if self.bos_force_token is not None:
             self.logits_processor.append(
                 ForcedBOSTokenLogitsProcessor(bos_force_token)

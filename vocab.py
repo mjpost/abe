@@ -94,13 +94,27 @@ class SharedVocab:
                     self.shared_tokenization[(vocab_i, token_id)] = self.tokenizers[vocab_i].encode(token, add_special_tokens=False)
                     # print(f"TOK({token}) in vocab {vocab_i} is {self.shared_tokenization[(vocab_i, token_id)]}")
 
-    def project_into(self, private_scores, vocab_index) -> List[float]:
+    def decode(self, token_ids: list[int]) -> str:
+        """
+        Decode a list of token IDs into a string.
+        """
+        return " ".join(self.ids_to_tokens[token_id] for token_id in token_ids)
+
+    def project_into(self, vocab_index, private_scores) -> List[float]:
         """
         Project scores from the input vocabulary specified by {vocab_index} to the shared vocab
+
+        :param vocab_index: which input vocabulary to project from
+        :param private_scores: scores in the input vocabulary
         """
-        shared_scores = np.full(len(self.tokens_to_ids), -np.inf, dtype=float)
-        for token_id, score in enumerate(private_scores):
-            shared_scores[self.private_to_shared[vocab_index][token_id]] = score
+        shared_scores = np.full(private_scores.shape, -np.inf, dtype=float)
+        # for each row of private_scores, project the indices into the shared vocab
+        print("SCORES SHAPE", shared_scores.shape)
+        print("VOCAB", vocab_index, "SHAPE:", len(self.private_to_shared[vocab_index]))
+        for beami in range(private_scores.shape[0]):
+            for token_id, score in enumerate(private_scores[beami, :]):
+                shared_token_id = self.private_to_shared[vocab_index][token_id]
+                shared_scores[beami][shared_token_id] = score
 
         return shared_scores
 
@@ -124,8 +138,16 @@ if __name__ == "__main__":
 
     tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in args.model_names]
 
-
     vocab = SharedVocab(tokenizers)
     for name, tokenizer in zip(args.model_names, tokenizers):
         print(len(tokenizer.get_vocab()), name, sep="\t")
     print(len(vocab), "shared", sep="\t")
+
+    # iterate over the first vocabulary until IDs fail
+    token_id = 0
+    while True:
+        try:
+            print(token_id, tokenizers[0].decode([token_id]))
+            token_id += 1
+        except KeyError:
+            break
