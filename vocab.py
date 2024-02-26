@@ -102,7 +102,7 @@ class SharedVocab:
         """
         return " ".join(self.ids_to_tokens[token_id] for token_id in token_ids)
 
-    def project_into(self, vocab_index, private_scores) -> List[float]:
+    def project_into(self, vocab_index, private_scores, step=None, default_value=0.0) -> List[float]:
         """
         Project scores from the input vocabulary specified by {vocab_index} to the shared vocab
 
@@ -111,18 +111,24 @@ class SharedVocab:
         """
         num_beams = private_scores.shape[0]
         shared_vocab_size = len(self)
-        shared_scores = np.full((num_beams, shared_vocab_size), -np.inf, dtype=float)
+        shared_scores = np.full((num_beams, shared_vocab_size), default_value, dtype=float)
 
         # for each row of private_scores, project the indices into the shared vocab
         print("SCORES SHAPE", shared_scores.shape)
         print("VOCAB", vocab_index, "SHAPE:", len(self.private_to_shared[vocab_index]))
+        logfile = open(f"log.project_into_{vocab_index}_step{step}", "w")
         for beami in range(num_beams):
             for token_id, score in enumerate(private_scores[beami, :]):
                 if token_id >= len(self.private_to_shared[vocab_index]):
                     print(f"Skipping token {vocab_index}/{token_id} (= {score}) which is out of bounds")
                     break
                 shared_token_id = self.private_to_shared[vocab_index][token_id]
-                shared_scores[beami][shared_token_id] = score
+                if shared_token_id != -1:
+                    shared_scores[beami][shared_token_id] = score
+
+                # write as a floating point number (not scientific notation)
+                if beami == 0 and shared_token_id != -1:
+                    print(f"{float(score):.10f}", shared_token_id, self.decode([shared_token_id]), file=logfile)
 
         return shared_scores
 
