@@ -22,6 +22,9 @@ from transformers.generation.utils import (
 from models import get_model_bundle, Model
 from vocab import SharedVocab
 
+
+STEP = 0
+
 @torch.no_grad()
 def ensemble_beam_search(
         input: str,
@@ -66,8 +69,8 @@ def ensemble_beam_search(
 
          # These are used to store the separate tokenizations from each model
         model_output_ids = [torch.ones((num_beams, 1), device=device, dtype=torch.long) for _ in models]
-        for m in model_output_ids:
-            m = m * model.model.config.decoder_start_token_id
+        for i in range(len(model_output_ids)):
+            model_output_ids[i] = model_output_ids[i] * model.model.config.decoder_start_token_id
 
         print("MODEL_OUTPUT_IDS", model_output_ids)
 
@@ -117,13 +120,20 @@ def ensemble_beam_search(
         beam_scores = beam_scores.view((batch_size * num_beams,))
 
         decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
+        max_steps = 5
         while True:
+            STEP = output_ids[0].shape[-1]
+            if len(output_ids[0]) > max_steps:
+                print("Breaking after", max_steps, "steps")
+                break
+
             # TODO: add preprocessing abstraction
 
             # transform each row of output_ids into tokens and print
             print("BEAM")
             for i in range(output_ids.shape[0]):
                 tokens = vocab.decode(output_ids[i].tolist())
+                # print(i, output_ids[i].tolist())
                 print(i, beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
             print()
 
@@ -131,23 +141,21 @@ def ensemble_beam_search(
             scores = []
             for modeli, model in enumerate(models):
                 # Give the model its current outputs
+                print("MODEL", modeli, "GIVING INPUTS", model_output_ids[modeli])
                 model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
-                print("MODEL OUTPUTS AFTER PREP", model_output_ids[modeli])
-
-                print("* MODEL", modeli)
 
                 # Step
-                outputs = model.step(model_inputs)
-                next_token_logits = outputs.logits[:, -1, :]
-                print("* OUTPUTS.LOGITS", next_token_logits.shape)
+                step_outputs = model.step(model_inputs)
+                next_token_logits = step_outputs.logits[:, -1, :]
+                # print("* OUTPUTS.LOGITS", next_token_logits.shape)
                 next_token_logits = model.logits_processor(model_output_ids[modeli], next_token_logits)
-                print("MODEL OUTPUTS AFTER STEP", model_output_ids[modeli])
                 next_token_scores = nn.functional.softmax(
                     next_token_logits, dim=-1
                 )  # (batch_size * num_beams, vocab_size)
 
                 # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
-                scores.append(torch.tensor(vocab.project_into(modeli, next_token_scores), device=device))
+                print(STEP, "Max score from model", modeli, torch.max(next_token_scores, dim=-1))
+                scores.append(torch.tensor(vocab.project_into(modeli, next_token_scores, step=STEP), device=device))
 
             """
             TODO: merge scores from different vocabularies
@@ -159,30 +167,17 @@ def ensemble_beam_search(
             """
 
             ## Project scores from each model into the shared vocabulary space for interpolation
+            # print(stepno, "Max score from model 0", torch.max(scores[0]))
+            # print(stepno, "Max score from model 1", torch.max(scores[1]))
             projected_scores = torch.stack(scores, dim=0)
             next_token_scores = torch.mean(projected_scores, dim=0)
+            # print(stepno, "Max score after mean", torch.max(next_token_scores, dim=-1))
+            # print(stepno, "Min score after mean", torch.min(next_token_scores, dim=-1))
             next_token_scores = torch.log(next_token_scores)
+            # print(stepno, "Max score after interpolation", torch.max(next_token_scores))
             next_token_scores = next_token_scores + beam_scores[:, None].expand_as(
                 next_token_scores
             )
-
-            # Store scores, attentions and hidden_states when required
-            if return_dict_in_generate:
-                if output_scores:
-                    scores += (next_token_scores_processed,)
-                if output_attentions:
-                    decoder_attentions += (
-                        (outputs.decoder_attentions,) if config.is_encoder_decoder else (outputs.attentions,)
-                    )
-                    if config.is_encoder_decoder:
-                        cross_attentions += (outputs.cross_attentions,)
-
-                if output_hidden_states:
-                    decoder_hidden_states += (
-                        (outputs.decoder_hidden_states,)
-                        if config.is_encoder_decoder
-                        else (outputs.hidden_states,)
-                    )
 
             # reshape for beam search
             vocab_size = next_token_scores.shape[-1]
@@ -193,6 +188,8 @@ def ensemble_beam_search(
             next_token_scores, next_tokens = torch.topk(
                 next_token_scores, max(2, 1 + n_eos_tokens) * num_beams, dim=1, largest=True, sorted=True
             )
+
+            print("TOPK", next_tokens.shape, next_tokens)
 
             next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
             next_tokens = next_tokens % vocab_size
@@ -213,7 +210,7 @@ def ensemble_beam_search(
             beam_next_tokens = beam_outputs["next_beam_tokens"]
             beam_idx = beam_outputs["next_beam_indices"]
 
-            print("-> NEXT TOKENS", beam_next_tokens.shape, beam_next_tokens)
+            print("-> NEXT TOKENS", beam_next_tokens.shape, beam_next_tokens, vocab.decode(beam_next_tokens.tolist()))
             print("-> NEXT INDICES", beam_idx)
 
             # extend the sequence of generated output tokens
@@ -246,8 +243,8 @@ def ensemble_beam_search(
                 new_token_seq = torch.nn.utils.rnn.pad_sequence(new_token_seq, batch_first=True, padding_value=0).unsqueeze(-1)
 
                 # Add the first new token column to the model's output
-                print("CONCAT MODEL", modeli, "OLD BEAM", model_output_ids[modeli].shape, model_output_ids[modeli])
-                print("  CONCATTING NEW_TOKEN_SEQ", new_token_seq[:, 0].shape, new_token_seq[:, 0])
+                print("CONCAT MODEL", modeli, "OLD BEAM", model_output_ids[modeli])
+                print("  CONCATTING NEW_TOKEN_SEQ", new_token_seq[:, 0])
                 model_output_ids[modeli] = torch.cat([model_output_ids[modeli], new_token_seq[:, 0]], dim=-1)
 
                 """
@@ -274,7 +271,7 @@ def ensemble_beam_search(
                         # take a step in the model with the token
                         model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
                         # Update the outputs
-                        outputs = model.step(model_inputs)
+                        step_outputs = model.step(model_inputs)
                         # next_token_logits = outputs.logits[:, -1, :]
                         # next_token_logits = model.logits_processor(output_ids, next_token_logits)
                         # next_token_scores = nn.functional.softmax(
