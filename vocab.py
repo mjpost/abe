@@ -26,7 +26,7 @@ class SharedVocab:
 
         # This maps from private vocab IDs to the shared vocab ID
         self.private_to_shared = []
-        self.shared_tokenization = []
+        self.shared_tokenization = {}
         self.tokenizers = tokenizers
         self.vocabs = []
         self.finalized = False
@@ -89,7 +89,9 @@ class SharedVocab:
         self.shared_tokenization = {}
         for token, token_id in self.tokens_to_ids.items():
             for vocab_i, vocab in enumerate(self.vocabs):
-                if token not in vocab:
+                if token in vocab:
+                    self.shared_tokenization[(vocab_i, token_id)] = [vocab[token]]
+                else:
                     # Tokenize the token using the vocab
                     self.shared_tokenization[(vocab_i, token_id)] = self.tokenizers[vocab_i].encode(token, add_special_tokens=False)
                     # print(f"TOK({token}) in vocab {vocab_i} is {self.shared_tokenization[(vocab_i, token_id)]}")
@@ -107,12 +109,18 @@ class SharedVocab:
         :param vocab_index: which input vocabulary to project from
         :param private_scores: scores in the input vocabulary
         """
-        shared_scores = np.full(private_scores.shape, -np.inf, dtype=float)
+        num_beams = private_scores.shape[0]
+        shared_vocab_size = len(self)
+        shared_scores = np.full((num_beams, shared_vocab_size), -np.inf, dtype=float)
+
         # for each row of private_scores, project the indices into the shared vocab
         print("SCORES SHAPE", shared_scores.shape)
         print("VOCAB", vocab_index, "SHAPE:", len(self.private_to_shared[vocab_index]))
-        for beami in range(private_scores.shape[0]):
+        for beami in range(num_beams):
             for token_id, score in enumerate(private_scores[beami, :]):
+                if token_id >= len(self.private_to_shared[vocab_index]):
+                    print(f"Skipping token {vocab_index}/{token_id} (= {score}) which is out of bounds")
+                    break
                 shared_token_id = self.private_to_shared[vocab_index][token_id]
                 shared_scores[beami][shared_token_id] = score
 
@@ -122,7 +130,7 @@ class SharedVocab:
         """
         Project a token from the shared vocab to the input vocab specified by {vocab_index}
         """
-        return self.shared_tokenization[token_id][vocab_index]
+        return self.shared_tokenization[(int(vocab_index), int(token_id))]
 
 
 if __name__ == "__main__":
