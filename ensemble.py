@@ -127,7 +127,7 @@ def ensemble_beam_search(
             # TODO: add preprocessing abstraction
 
             # transform each row of output_ids into tokens and print
-            print("BEAM")
+            print("BEAM", STEP)
             for i in range(output_ids.shape[0]):
                 tokens = vocab.decode(output_ids[i].tolist())
                 # print(i, output_ids[i].tolist())
