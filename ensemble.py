@@ -10,7 +10,6 @@ from torch import nn, LongTensor
 from transformers import (
     LogitsProcessor,
     BeamSearchScorer,
-    BeamScorer,
     MaxLengthCriteria,
 )
 
@@ -63,9 +62,12 @@ def ensemble_beam_search(
             # TODO: maybe this is where the first decoder token should also be set?
             model.set_input(input, num_beams=num_beams)
 
+        # Construct the shared model vocabulary. The beam works in this space.
+        vocab = SharedVocab([model.tokenizer for model in models])
+
         # This is used to store the canonical, shared output
-        output_ids = torch.ones((num_beams, 1), device=model.model.device, dtype=torch.long)
-        output_ids = output_ids * model.model.config.decoder_start_token_id
+        output_ids = torch.ones((num_beams, 0), device=model.model.device, dtype=torch.long)
+        # output_ids = output_ids * vocab.bos_token_id
 
          # These are used to store the separate tokenizations from each model
         model_output_ids = [torch.ones((num_beams, 1), device=device, dtype=torch.long) for _ in models]
@@ -83,15 +85,13 @@ def ensemble_beam_search(
 
         stopping_criteria = MaxLengthCriteria(max_length=max_length)
 
-        # Construct the shared model vocabulary. The beam works in this space.
-        vocab = SharedVocab([model.tokenizer for model in models])
-
         # if len(stopping_criteria) == 0:
         #     warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
         pad_token_id = vocab.pad_token_id
         eos_token_id = vocab.eos_token_id
         if isinstance(eos_token_id, int):
             eos_token_id = [eos_token_id]
+        print("EOS", eos_token_id)
         output_scores = output_scores
         output_attentions = ( output_attentions )
         output_hidden_states = ( output_hidden_states )
@@ -120,12 +120,8 @@ def ensemble_beam_search(
         beam_scores = beam_scores.view((batch_size * num_beams,))
 
         decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
-        max_steps = 5
         while True:
             STEP = output_ids[0].shape[-1]
-            if len(output_ids[0]) > max_steps:
-                print("Breaking after", max_steps, "steps")
-                break
 
             # TODO: add preprocessing abstraction
 
@@ -322,7 +318,6 @@ def ensemble_beam_search(
                 #     #     next_token_logits, dim=-1
                 #     # )  # (batch_size * num_beams, vocab_size)
 
-            # Temporary fix for when beam size == 1
             if beam_scorer.is_done or stopping_criteria(output_ids, scores):
                 break
 
