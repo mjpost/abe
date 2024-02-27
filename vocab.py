@@ -16,13 +16,19 @@ class SharedVocab:
         then tokenize it using the input vocab, to provide a unique tokenization.
     """
 
+    BOS = "<s>"
+    PAD = "<pad>"
+    EOS = "</s>"
+    UNK = "<unk>"
+
     def __init__(self, tokenizers: List):
         self.tokens_to_ids = {}
         self.ids_to_tokens = {}
 
-        self.add_token("<pad>")
-        self.add_token("<bos>")
-        self.add_token("<eos>")
+        self.add_token(self.BOS)
+        self.add_token(self.PAD)
+        self.add_token(self.EOS)
+        self.add_token(self.UNK)
 
         # This maps from private vocab IDs to the shared vocab ID
         self.private_to_shared = []
@@ -36,15 +42,15 @@ class SharedVocab:
 
     @property
     def pad_token_id(self):
-        return self.tokens_to_ids["<pad>"]
+        return self.tokens_to_ids[self.PAD]
 
     @property
     def bos_token_id(self):
-        return self.tokens_to_ids["<bos>"]
+        return self.tokens_to_ids[self.BOS]
     
     @property
     def eos_token_id(self):
-        return self.tokens_to_ids["<eos>"]
+        return self.tokens_to_ids[self.EOS]
 
     def __len__(self):
         return len(self.tokens_to_ids)
@@ -61,7 +67,7 @@ class SharedVocab:
 
         return self.tokens_to_ids[token]
 
-    def add_vocab(self, vocab):
+    def add_vocab(self, private_vocab):
         """
         Add the vocabulary to the shared vocab.
         """
@@ -69,15 +75,17 @@ class SharedVocab:
             raise ValueError("Cannot add vocab to a finalized shared vocab")
 
         # Add a copy of the vocab to the list of vocabs
-        self.vocabs.append(vocab.copy())
+        self.vocabs.append(private_vocab.copy())
 
         # Make sure every entry is in the shared vocab
-        self.private_to_shared.append(np.full(len(vocab), -1, dtype=int))
-        for i, token in enumerate(vocab):
+        self.private_to_shared.append(np.full(len(private_vocab), -1, dtype=int))
+        for i, token in enumerate(private_vocab):
             if token not in self.tokens_to_ids:
                 # Create a new entry
-                shared_token_id = self.add_token(token)
-                self.private_to_shared[-1][i] = shared_token_id
+                self.add_token(token)
+            shared_token_id = self.tokens_to_ids[token]
+            self.private_to_shared[-1][i] = shared_token_id
+            # print("VOCAB", len(self.vocabs) - 1, i, token, shared_token_id, self.decode([shared_token_id]))
 
     def finalize(self):
         """
