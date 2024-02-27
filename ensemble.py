@@ -21,6 +21,7 @@ from transformers.generation.utils import (
 from models import get_model_bundle, Model
 from vocab import SharedVocab
 
+__version__ = "0.0.1"
 
 STEP = 0
 
@@ -405,6 +406,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-beams", "-b", type=int, default=2, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
     parser.add_argument("--max-output-tokens", "-l", type=int, default=30, help="Maximum number of output tokens")
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
 
     main(args)
