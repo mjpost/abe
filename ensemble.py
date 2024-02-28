@@ -25,6 +25,7 @@ __version__ = "0.0.1"
 
 STEP = 0
 
+
 @torch.no_grad()
 def ensemble_beam_search(
         input: str,
@@ -40,9 +41,9 @@ def ensemble_beam_search(
         Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
 
         - Code source:
-          https://github.com/huggingface/transformers/blob/07e3454f034b4889925621e8e3253547d2a04aa7/src/transformers/generation/utils.py#L2764
+            https://github.com/huggingface/transformers/blob/07e3454f034b4889925621e8e3253547d2a04aa7/src/transformers/generation/utils.py#L2764
         - Beam search support:
-          https://github.com/huggingface/transformers/blob/main/src/transformers/generation/beam_search.py
+            https://github.com/huggingface/transformers/blob/main/src/transformers/generation/beam_search.py
 
         TODO:
         - [ ] Generalize to n models  
@@ -50,6 +51,29 @@ def ensemble_beam_search(
 
         num_models = len(models)
         device = models[0].model.device
+
+        def initialize_model(model):
+            """
+            Advance a model just beyond generation of its BOS tokens.
+            Calling this on each model ensures that they are all in a position
+            to advance freely.
+            """
+            model_output_ids = torch.ones((num_beams, 1), device=device, dtype=torch.long)
+            model_output_ids = model_output_ids * model.model.config.decoder_start_token_id
+
+            # step through the forced BOS token
+            if model.bos_force_token:
+                model_inputs = model.prepare_inputs_for_generation(model_output_ids)
+
+                # Step
+                step_outputs = model.step(model_inputs)
+                next_token_logits = step_outputs.logits[:, -1, :]
+                # print("* OUTPUTS.LOGITS", next_token_logits.shape)
+
+                forced_tokens = torch.ones((num_beams, 1), device=device, dtype=torch.long) * model.bos_force_token
+                model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
+
+            return model_output_ids
 
         # instantiate beam scorer
         beam_scorer = BeamSearchScorer(
@@ -70,10 +94,9 @@ def ensemble_beam_search(
         output_ids = torch.ones((num_beams, 0), device=model.model.device, dtype=torch.long)
         # output_ids = output_ids * vocab.bos_token_id
 
-         # These are used to store the separate tokenizations from each model
-        model_output_ids = [torch.ones((num_beams, 1), device=device, dtype=torch.long) for _ in models]
-        for i in range(len(model_output_ids)):
-            model_output_ids[i] = model_output_ids[i] * model.model.config.decoder_start_token_id
+        # Initialize models, including running over force BOS tokens
+        # These store individual models' tokenized outputs
+        model_output_ids = [initialize_model(model) for model in models]
 
         print("MODEL_OUTPUT_IDS", model_output_ids)
 
@@ -103,9 +126,6 @@ def ensemble_beam_search(
         beam_indices = (
             tuple(() for _ in range(batch_beam_size)) if (return_dict_in_generate and output_scores) else None
         )
-        decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
-        cross_attentions = () if (return_dict_in_generate and output_attentions) else None
-        decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
 
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
         # if return_dict_in_generate and config.is_encoder_decoder:
@@ -145,6 +165,8 @@ def ensemble_beam_search(
                 step_outputs = model.step(model_inputs)
                 next_token_logits = step_outputs.logits[:, -1, :]
                 # print("* OUTPUTS.LOGITS", next_token_logits.shape)
+
+                # Massage the logits. This is how prefix decoding is enforced.
                 next_token_logits = model.logits_processor(model_output_ids[modeli], next_token_logits)
                 next_token_scores = nn.functional.softmax(
                     next_token_logits, dim=-1
@@ -152,7 +174,7 @@ def ensemble_beam_search(
 
                 # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
                 print(STEP, "Max score from model", modeli, torch.max(next_token_scores, dim=-1))
-                scores.append(torch.tensor(vocab.project_into(modeli, next_token_scores, step=STEP), device=device))
+                scores.append(torch.tensor(vocab.project_into(modeli, next_token_scores, history=model_output_ids[modeli], step=STEP), device=device))
 
             """
             TODO: merge scores from different vocabularies
@@ -279,45 +301,6 @@ def ensemble_beam_search(
                     model_output_ids[modeli] = torch.cat([model_output_ids[modeli], new_token_seq[:, next_tokeni]], dim=1)
 
                     # TODO: shift left over previous zeros anywhere
-
-
-                # for beam_i in range(num_beams):
-
-                #     for next_token in new_token_seq[beam_i, 1:]:
-
-                #     for token in new_token_seq[beam_i]:
-                #         if token == 0:
-                #             break
-
-                #         # add the token to the outputs
-                #         print("MODEL", modeli, "OLD BEAM", model_output_ids[modeli][beam_i, :])
-                #         print("NEW TOKEN", token)
-                #         model_output_ids[modeli][beam_i, :] = torch.cat([model_output_ids[modeli][beam_i, :], torch.tensor([token], device=device)], dim=-1)
-
-                #         # call prepare
-                #         model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
-
-                #         # step, force-decoding to the token
-                #         outputs = model.step(model_inputs, force_token_id=next_token)
-
-                #     # project the token back into the model's space
-                #     token_id = vocab.project_token(token_id, modeli)
-                #     # add the token to the model's output
-                #     model_output_ids[modeli][beam_i, cur_len] = token_id
-
-
-                # # for modeli, model in enumerate(models):
-                #     # Give the model its current outputs
-                #     # model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
-
-                #     # # Step
-                #     # outputs = model.step(model_inputs)
-
-                #     # next_token_logits = outputs.logits[:, -1, :]
-                #     # next_token_logits = model.logits_processor(output_ids, next_token_logits)
-                #     # next_token_scores = nn.functional.softmax(
-                #     #     next_token_logits, dim=-1
-                #     # )  # (batch_size * num_beams, vocab_size)
 
             if beam_scorer.is_done or stopping_criteria(output_ids, scores):
                 break
