@@ -127,6 +127,46 @@ class Model:
         )
         return outputs
 
+    def topk(self):
+        # Give the model its current outputs
+        print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
+        model_inputs = self.prepare_inputs_for_generation(model_output_ids)
+
+        # Step
+        step_outputs = self.step(model_inputs)
+        next_token_logits = step_outputs.logits[:, -1, :]
+        # print("* OUTPUTS.LOGITS", next_token_logits.shape)
+
+        # Massage the logits. This is how prefix decoding is enforced.
+        next_token_logits = self.logits_processor(model_output_ids, next_token_logits)
+        next_token_scores = nn.functional.softmax(
+            next_token_logits, dim=-1
+        )  # (batch_size * num_beams, vocab_size)
+
+        # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
+        # print(STEP, "Max score from model", modeli, torch.max(next_token_scores, dim=-1))
+        scores.append(next_token_scores)
+
+        next_token_scores = next_token_scores + model_beam_scores[:, None].expand_as(next_token_scores)
+
+        # reshape for beam search
+        vocab_size = next_token_scores.shape[-1]
+        next_token_scores = next_token_scores.view(batch_size, num_beams * vocab_size)
+
+        # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
+        n_eos_tokens = len(eos_token_id) if eos_token_id else 0
+        next_token_scores, next_tokens = torch.topk(
+            next_token_scores, max(2, 1 + n_eos_tokens) * num_beams, dim=1, largest=True, sorted=True
+        )
+
+        # print("TOPK", next_tokens.shape, next_tokens)
+
+        # TODO: create candidate items out of these
+        next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
+        next_tokens = next_tokens % vocab_size
+
+        return [Candidate(beamno, token_id) for beamno, token_id in zip(next_indices, next_tokens]
+
 
     def _extract_past_from_model_output(self, outputs: ModelOutput):
         past_key_values = None

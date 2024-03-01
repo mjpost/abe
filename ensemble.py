@@ -25,6 +25,59 @@ __version__ = "0.0.1"
 
 STEP = 0
 
+class BeamItem:
+    def __init__(self, score, tokens):
+        self.score = score
+        self.tokens = [x for x in tokens]
+        self.synced = True
+
+
+class EnsembleBeam:
+    def __init__(self, models, batch_size, num_beams, device):
+        self.batch_size = batch_size
+        self.num_beams = num_beams
+        self.device = device
+
+        # This is used to store the canonical, shared output
+        output_ids = torch.ones((num_beams, 0), device=model.model.device, dtype=torch.long)
+        # output_ids = output_ids * vocab.bos_token_id
+
+        print("MODEL_OUTPUT_IDS", model_output_ids)
+
+        model_beam_scores = []
+        for _ in models:
+            model_beam_scores.append(torch.zeros((batch_size, num_beams), dtype=torch.float, device=device))
+            model_beam_scores[-1][:, 1:] = -1e9
+            model_beam_scores[-1] = model_beam_scores[-1].view((batch_size * num_beams,))
+
+        self.model_beam_scores = model_beam_scores
+
+        """
+        Advance a model just beyond generation of its BOS tokens.
+        Calling this on each model ensures that they are all in a position
+        to advance freely.
+        """
+        self.model_output_ids = []
+        for model in models:
+            model_output_ids = torch.ones((num_beams, 1), device=device, dtype=torch.long)
+            model_output_ids = model_output_ids * model.model.config.decoder_start_token_id
+
+            # step through the forced BOS token
+            if model.bos_force_token:
+                model_inputs = model.prepare_inputs_for_generation(model_output_ids)
+
+                # Step
+                step_outputs = model.step(model_inputs)
+                next_token_logits = step_outputs.logits[:, -1, :]
+                # print("* OUTPUTS.LOGITS", next_token_logits.shape)
+
+                forced_tokens = torch.ones((num_beams, 1), device=device, dtype=torch.long) * model.bos_force_token
+                model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
+
+                # Initialize models, including running over force BOS tokens
+        # These store individual models' tokenized outputs
+            self.model_output_ids.append(model_output_ids)
+
 
 @torch.no_grad()
 def ensemble_beam_search(
@@ -52,29 +105,6 @@ def ensemble_beam_search(
     num_models = len(models)
     device = models[0].model.device
 
-    def initialize_model(model):
-        """
-        Advance a model just beyond generation of its BOS tokens.
-        Calling this on each model ensures that they are all in a position
-        to advance freely.
-        """
-        model_output_ids = torch.ones((num_beams, 1), device=device, dtype=torch.long)
-        model_output_ids = model_output_ids * model.model.config.decoder_start_token_id
-
-        # step through the forced BOS token
-        if model.bos_force_token:
-            model_inputs = model.prepare_inputs_for_generation(model_output_ids)
-
-            # Step
-            step_outputs = model.step(model_inputs)
-            next_token_logits = step_outputs.logits[:, -1, :]
-            # print("* OUTPUTS.LOGITS", next_token_logits.shape)
-
-            forced_tokens = torch.ones((num_beams, 1), device=device, dtype=torch.long) * model.bos_force_token
-            model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
-
-        return model_output_ids
-
     # instantiate beam scorer
     beam_scorer = BeamSearchScorer(
         batch_size=1,
@@ -89,16 +119,6 @@ def ensemble_beam_search(
 
     # Construct the shared model vocabulary. The beam works in this space.
     vocab = SharedVocab([model.tokenizer for model in models])
-
-    # This is used to store the canonical, shared output
-    output_ids = torch.ones((num_beams, 0), device=model.model.device, dtype=torch.long)
-    # output_ids = output_ids * vocab.bos_token_id
-
-    # Initialize models, including running over force BOS tokens
-    # These store individual models' tokenized outputs
-    model_output_ids = [initialize_model(model) for model in models]
-
-    print("MODEL_OUTPUT_IDS", model_output_ids)
 
     batch_size = 1  # len(beam_scorer._beam_hyps)
     batch_beam_size, cur_len = output_ids.shape
@@ -140,6 +160,8 @@ def ensemble_beam_search(
     beam_scores[:, 1:] = -1e9
     beam_scores = beam_scores.view((batch_size * num_beams,))
 
+    beam = EnsembleBeam()
+
     decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
     while True:
         STEP = output_ids[0].shape[-1]
@@ -147,34 +169,12 @@ def ensemble_beam_search(
         # TODO: add preprocessing abstraction
 
         # transform each row of output_ids into tokens and print
-        print("BEAM", STEP)
-        for i in range(output_ids.shape[0]):
-            tokens = vocab.decode(output_ids[i].tolist())
-            # print(i, output_ids[i].tolist())
-            print(i, beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
-        print()
+        print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP)
+
+        beam.step()
 
         # Take the next step of each model
-        scores = []
-        for modeli, model in enumerate(models):
-            # Give the model its current outputs
-            print("MODEL", modeli, "GIVING INPUTS", model_output_ids[modeli])
-            model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
-
-            # Step
-            step_outputs = model.step(model_inputs)
-            next_token_logits = step_outputs.logits[:, -1, :]
-            # print("* OUTPUTS.LOGITS", next_token_logits.shape)
-
-            # Massage the logits. This is how prefix decoding is enforced.
-            next_token_logits = model.logits_processor(model_output_ids[modeli], next_token_logits)
-            next_token_scores = nn.functional.softmax(
-                next_token_logits, dim=-1
-            )  # (batch_size * num_beams, vocab_size)
-
-            # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
-            print(STEP, "Max score from model", modeli, torch.max(next_token_scores, dim=-1))
-            scores.append(torch.tensor(vocab.project_into(modeli, next_token_scores, history=model_output_ids[modeli], step=STEP), device=device))
+        candidates = [model.topk() for model in models]
 
         """
         TODO: merge scores from different vocabularies
@@ -185,13 +185,6 @@ def ensemble_beam_search(
         Not sure yet how to handle the fact that there will be different output lengths for each model.
         """
 
-        ## Project scores from each model into the shared vocabulary space for interpolation
-        # print(stepno, "Max score from model 0", torch.max(scores[0]))
-        # print(stepno, "Max score from model 1", torch.max(scores[1]))
-        projected_scores = torch.stack(scores, dim=0)
-        next_token_scores = torch.mean(projected_scores, dim=0)
-        # print(stepno, "Max score after mean", torch.max(next_token_scores, dim=-1))
-        # print(stepno, "Min score after mean", torch.min(next_token_scores, dim=-1))
         next_token_scores = torch.log(next_token_scores)
         # print(stepno, "Max score after interpolation", torch.max(next_token_scores))
         next_token_scores = next_token_scores + beam_scores[:, None].expand_as(
@@ -199,6 +192,7 @@ def ensemble_beam_search(
         )
 
         # reshape for beam search
+        # topk selection works over one dimension at a time, so we need to put all competing items in the same row
         vocab_size = next_token_scores.shape[-1]
         next_token_scores = next_token_scores.view(batch_size, num_beams * vocab_size)
 
@@ -346,6 +340,14 @@ def ensemble_beam_search(
             )
     else:
         return sequence_outputs["sequences"]
+
+def print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP):
+    print("BEAM", STEP)
+    for i in range(output_ids.shape[0]):
+        tokens = vocab.decode(output_ids[i].tolist())
+            # print(i, output_ids[i].tolist())
+        print(i, beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
+    print()
 
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
