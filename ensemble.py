@@ -19,7 +19,7 @@ from transformers.generation.utils import (
     GenerateBeamDecoderOnlyOutput, 
     GenerateBeamEncoderDecoderOutput,
 )
-from models import get_model_bundle, Model
+from models import get_model_bundle, Bundle
 from vocab import SharedVocab
 
 __version__ = "0.0.1"
@@ -109,10 +109,15 @@ class EnsembleBeam:
             )
 
 
+class Candidate:
+    def __init__(self, item):
+        pass
+
+
 @torch.no_grad()
 def ensemble_beam_search(
         input: str,
-        models: List[Model],
+        models: List[Bundle],
         max_length: Optional[int] = None,
         num_beams: int = 1,
         output_scores: Optional[bool] = True,
@@ -147,51 +152,32 @@ def ensemble_beam_search(
         # TODO: maybe this is where the first decoder token should also be set?
         model.set_input(input, num_beams=num_beams)
 
-    # Construct the shared model vocabulary. The beam works in this space.
-    vocab = SharedVocab([model.tokenizer for model in models])
-
     batch_size = 1  # len(beam_scorer._beam_hyps)
-    batch_beam_size, cur_len = output_ids.shape
-    if num_beams * batch_size != batch_beam_size:
-        raise ValueError(
-            f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
-        )
+    batch_beam_size = batch_size * num_beams
 
     stopping_criteria = MaxLengthCriteria(max_length=max_length)
 
     # if len(stopping_criteria) == 0:
     #     warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
-    pad_token_id = vocab.pad_token_id
-    eos_token_id = vocab.eos_token_id
-    if isinstance(eos_token_id, int):
-        eos_token_id = [eos_token_id]
-    print("EOS", eos_token_id)
-    output_scores = output_scores
-    output_attentions = ( output_attentions )
-    output_hidden_states = ( output_hidden_states )
-    return_dict_in_generate = ( return_dict_in_generate )
-
-    # init attention / hidden states / scores tuples
-    scores = () if (return_dict_in_generate and output_scores) else None
-    beam_indices = (
-        tuple(() for _ in range(batch_beam_size)) if (return_dict_in_generate and output_scores) else None
-    )
-
-    # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
-    # if return_dict_in_generate and config.is_encoder_decoder:
-    #     encoder_attentions = model.model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
-    #     encoder_hidden_states = (
-    #         model.model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
-    #     )
+    # pad_token_id = vocab.pad_token_id
+    # eos_token_id = vocab.eos_token_id
+    # if isinstance(eos_token_id, int):
+    #     eos_token_id = [eos_token_id]
+    # print("EOS", eos_token_id)
 
     # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
     # of the first beam are considered to avoid sampling the exact same tokens across all beams.
-    beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=output_ids.device)
-    beam_scores[:, 1:] = -1e9
-    beam_scores = beam_scores.view((batch_size * num_beams,))
+    beam_scores = [torch.zeros((batch_size, num_beams), dtype=torch.float, device=device) for _ in range(num_models)]
+    for i in range(num_models):
+        beam_scores[i][:, 1:] = -1e9
+        beam_scores[i] = beam_scores[i].view((batch_size * num_beams,))
 
     beam = EnsembleBeam()
 
+    model_output_ids = []
+
+    def compatible(cand1, cand2):
+        return models[0].tokenizer.decode(cand1.tokens) == models[0].tokenizer.decode(cand2.tokens)
 
     STEP = 0
     while True:
@@ -200,16 +186,71 @@ def ensemble_beam_search(
         # TODO: add preprocessing abstraction
 
         # transform each row of output_ids into tokens and print
-        print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP)
+        # print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP)
  
-        candidates = []
-        # add
-        # heapq.heappush(candidates, BeamItem(0.0, output_ids[0].tolist())
-        # remove
-        smallest = heapq.heappop(candidates)
+        candidates = [ [] for _ in range(num_models) ]
 
         # Take the next step of each model
-        candidates = [model.topk() for model in models]
+        for model_i, model in enumerate(models):
+            model_inputs = model.prepare_inputs_for_generation(model_output_ids[model_i])
+            outputs = model.step(model_inputs)
+
+                # if output_attentions:
+                #     decoder_attentions += (
+                #         (outputs.decoder_attentions,) if self.config.is_encoder_decoder else (outputs.attentions,)
+                #     )
+                #     if self.config.is_encoder_decoder:
+                #         cross_attentions += (outputs.cross_attentions,)
+
+                # if output_hidden_states:
+                #     decoder_hidden_states += (
+                #         (outputs.decoder_hidden_states,)
+                #         if self.config.is_encoder_decoder
+                #         else (outputs.hidden_states,)
+                #     )
+
+
+            # topk on synchronized items
+            topk = model.topk(outputs, self.get_sync_mask())
+            for item in topk:
+                cand = Candidate(item)
+                heapq.heappush(candidates[model_i], cand)
+
+            # topk on items where this model is behind
+            topk = model.topk(outputs, self.get_behind_mask(model_i))
+            for item in topk:
+                # TODO: actually take the step, and push the item on the candidates list
+                cand = Candidate(item)
+                heapq.heappush(candidates[model_i], cand)
+
+        lazy_items = []
+        for i, cand1 in enumerate(candidates[0]):
+            for j, cand2 in enumerate(candidates[1]):
+                if compatible(cand1, cand2):
+                    heapq.heappush(lazy_items, LazyItem(cand1, cand2))
+                    candidates[0].remove(cand1)
+                    candidates[1].remove(cand2)
+        for j, cand2 in enumerate(candidates[1]):
+            for i, cand1 in enumerate(candidates[0]):
+                if compatible(cand1, cand2):
+                    heapq.heappush(lazy_items, LazyItem(cand1, cand2))
+                    candidates[0].remove(cand1)
+                    candidates[1].remove(cand2)
+
+        # Now, we do lazy k-best extraction from the pairs
+        next_beam = EnsembleBeam()
+        while len(next_beam) < num_beams:
+            # pop top item from lazy_items
+            pair = heapq.heappop(lazy_items)
+
+            # add to next_beam
+            next_beam.append(pair)
+
+            # add sucessors
+            for succ in pair.successors():
+                heapq.heappush(lazy_items, succ)
+
+        beam = next_beam
 
         """
         TODO: merge scores from different vocabularies
@@ -219,28 +260,6 @@ def ensemble_beam_search(
         We then fast-forward multi-token models to catch up.
         Not sure yet how to handle the fact that there will be different output lengths for each model.
         """
-
-        next_token_scores = torch.log(next_token_scores)
-        # print(stepno, "Max score after interpolation", torch.max(next_token_scores))
-        next_token_scores = next_token_scores + beam_scores[:, None].expand_as(
-            next_token_scores
-        )
-
-        # reshape for beam search
-        # topk selection works over one dimension at a time, so we need to put all competing items in the same row
-        vocab_size = next_token_scores.shape[-1]
-        next_token_scores = next_token_scores.view(batch_size, num_beams * vocab_size)
-
-        # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
-        n_eos_tokens = len(eos_token_id) if eos_token_id else 0
-        next_token_scores, next_tokens = torch.topk(
-            next_token_scores, max(2, 1 + n_eos_tokens) * num_beams, dim=1, largest=True, sorted=True
-        )
-
-        print("TOPK", next_tokens.shape, next_tokens)
-
-        next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
-        next_tokens = next_tokens % vocab_size
 
         # Why does the beam scorer care about the decoder prompt length?
         beam_outputs = beam_scorer.process(
@@ -346,35 +365,8 @@ def ensemble_beam_search(
         decoder_prompt_len=decoder_prompt_len,
     )
 
-    if return_dict_in_generate:
-        if not output_scores:
-            sequence_outputs["sequence_scores"] = None
+    return sequence_outputs["sequences"]
 
-        if model.config.is_encoder_decoder:
-            return GenerateBeamEncoderDecoderOutput(
-                sequences=sequence_outputs["sequences"],
-                sequences_scores=sequence_outputs["sequence_scores"],
-                scores=scores,
-                beam_indices=sequence_outputs["beam_indices"],
-                encoder_attentions=encoder_attentions,
-                encoder_hidden_states=encoder_hidden_states,
-                decoder_attentions=decoder_attentions,
-                cross_attentions=cross_attentions,
-                decoder_hidden_states=decoder_hidden_states,
-                past_key_values=model_kwargs.get("past_key_values"),
-            )
-        else:
-            return GenerateBeamDecoderOnlyOutput(
-                sequences=sequence_outputs["sequences"],
-                sequences_scores=sequence_outputs["sequence_scores"],
-                scores=scores,
-                beam_indices=sequence_outputs["beam_indices"],
-                attentions=decoder_attentions,
-                hidden_states=decoder_hidden_states,
-                past_key_values=model_kwargs.get("past_key_values"),
-            )
-    else:
-        return sequence_outputs["sequences"]
 
 def print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP):
     print("BEAM", STEP)

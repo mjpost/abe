@@ -52,6 +52,13 @@ model name -> params(
     - etc
 )
 
+## Files
+
+- Definition of generate(): /Users/mattpost/src/transformers/src/transformers/generation/utils.py
+
+  This is a version that's generate over beam search, sampling, constrained search, etc.
+  Actually calls beam_search() in the same file.
+
 ## Models
 
 - "facebook/m2m100_418M": 128104 tokens

@@ -18,7 +18,7 @@ from transformers.generation.utils import (
 def get_model_bundle(
         model_name: str,
         target_language: Optional[str] = "fr",
-        ) -> "Model":
+        ) -> "Bundle":
 
     print(f"Instantiating model {model_name}", file=sys.stderr)
 
@@ -32,7 +32,7 @@ def get_model_bundle(
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[lang_map[target_language]]
         print("*", model_name, bos_token_id, file=sys.stderr)
-        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_418M":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
@@ -40,7 +40,7 @@ def get_model_bundle(
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[target_language]
         print("*", model_name, bos_token_id, file=sys.stderr)
-        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_1.2B":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
@@ -48,13 +48,26 @@ def get_model_bundle(
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_token_id = tokenizer.lang_code_to_id[target_language]
         print("*", model_name, bos_token_id, file=sys.stderr)
-        return Model(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
 
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
 
-class Model:
+class ModelState:
+    def __init__(self,
+                 bundle: "Bundle",
+    ):
+        self.model = bundle
+        self.model_kwargs = bundle.model_kwargs
+        self.model_input = bundle.input
+        self.model_output = None
+        self.model_output_ids = None
+        self.model_beam_scores = None
+        self.model_beam_indices = None
+
+
+class Bundle:
     def __init__(self,
                  model: Optional[PreTrainedModel] = None,
                  tokenizer: Optional[PreTrainedTokenizer] = None,
@@ -62,6 +75,7 @@ class Model:
                  bos_force_token: Optional[int] = None,
                  is_encoder_decoder: Optional[bool] = False,
                  k=1,
+                 device=None,
                  **kwargs):
 
         self.model = model
@@ -70,10 +84,12 @@ class Model:
         self.bos_force_token = bos_force_token
         self.model_kwargs = kwargs
         self.k = k
+        self.device = device
 
         # TODO: use config.is_encoder_decoder
         self.is_encoder_decoder = is_encoder_decoder
 
+        # These are used as a cache in step(), drastically speeds things up
         self.output_attentions = False
         self.output_hidden_states = False
 
@@ -82,8 +98,6 @@ class Model:
             self.logits_processor.append(
                 ForcedBOSTokenLogitsProcessor(bos_force_token)
         )
-            
-        self.input = None
 
     def get_vocab(self):
         return self.tokenizer.get_vocab()
@@ -93,14 +107,24 @@ class Model:
         Tokenize and encode the input. For seq2seq models, store the encoder outputs
         for passing in the generation loop in step().
         """
-        self.input = self.tokenizer(line, return_tensors=return_tensors)
-        encoder_input_ids = self.input.input_ids
+        input = self.tokenizer(line, return_tensors=return_tensors)
+        encoder_input_ids = input.input_ids
 
         # Encoder outputs only need to be set once, then stored
+        encoder_outputs = self.model.get_encoder()(
+            encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
+        )
+
+        encoder_attentions = None
+        encoder_hiddne_states = None
+        if self.config.is_encoder_decoder:
+            encoder_attentions = encoder_outputs.get("attentions")
+            encoder_hidden_states = (
+                encoder_outputs.get("hidden_states")
+            )
+
         self.model_kwargs = {
-            "encoder_outputs": self.model.get_encoder()(
-                encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
-            ),
+            "encoder_outputs": encoder_outputs,
         }
 
         # Not sure all this garbage is needed.
@@ -109,7 +133,25 @@ class Model:
         generation_config.validate()
         self.model._validate_model_kwargs(self.model_kwargs.copy())
 
-        return encoder_input_ids
+        model_output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long)
+        model_output_ids = model_output_ids * self.model.config.decoder_start_token_id
+
+        if self.model.bos_force_token:
+            model_inputs = self.model.prepare_inputs_for_generation(model_output_ids)
+
+            # Step
+            step_outputs = self.model.step(model_inputs)
+            next_token_logits = step_outputs.logits[:, -1, :]
+            # print("* OUTPUTS.LOGITS", next_token_logits.shape)
+
+            forced_tokens = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.model.bos_force_token
+            model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
+
+            # Initialize models, including running over force BOS tokens
+        # These store individual models' tokenized outputs
+        self.model_output_ids.append(model_output_ids)
+
+        return encoder_input_ids, encoder_outputs
     
     def prepare_inputs_for_generation(self, outputs):
         """
