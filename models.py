@@ -61,6 +61,7 @@ class Model:
                  max_length: Optional[int] = None,
                  bos_force_token: Optional[int] = None,
                  is_encoder_decoder: Optional[bool] = False,
+                 k=1,
                  **kwargs):
 
         self.model = model
@@ -68,6 +69,7 @@ class Model:
         self.max_length = max_length
         self.bos_force_token = bos_force_token
         self.model_kwargs = kwargs
+        self.k = k
 
         # TODO: use config.is_encoder_decoder
         self.is_encoder_decoder = is_encoder_decoder
@@ -127,10 +129,12 @@ class Model:
         )
         return outputs
 
-    def topk(self):
+    def topk(self, model_inputs, mask, k=None):
+        k = self.k if k is None else k
+
         # Give the model its current outputs
-        print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
-        model_inputs = self.prepare_inputs_for_generation(model_output_ids)
+        # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
+        model_inputs = self.prepare_inputs_for_generation(model_inputs)
 
         # Step
         step_outputs = self.step(model_inputs)
@@ -165,7 +169,7 @@ class Model:
         next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
         next_tokens = next_tokens % vocab_size
 
-        return [Candidate(beamno, token_id) for beamno, token_id in zip(next_indices, next_tokens]
+        return next_indices, next_tokens, next_token_scores
 
 
     def _extract_past_from_model_output(self, outputs: ModelOutput):

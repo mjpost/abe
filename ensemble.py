@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import heapq
 import sys
 import torch
 
@@ -33,16 +34,15 @@ class BeamItem:
 
 
 class EnsembleBeam:
-    def __init__(self, models, batch_size, num_beams, device):
+    def __init__(self, models, batch_size, num_beams, target_language, device):
         self.batch_size = batch_size
         self.num_beams = num_beams
+        self.target_language = target_language
         self.device = device
 
-        # This is used to store the canonical, shared output
-        output_ids = torch.ones((num_beams, 0), device=model.model.device, dtype=torch.long)
-        # output_ids = output_ids * vocab.bos_token_id
+        self.synchronized = [ [ True for _ in range(num_beams) ] for _ in range(batch_size)]
 
-        print("MODEL_OUTPUT_IDS", model_output_ids)
+        self.output_strings = ["" for _ in range(num_beams)]
 
         model_beam_scores = []
         for _ in models:
@@ -75,8 +75,38 @@ class EnsembleBeam:
                 model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
 
                 # Initialize models, including running over force BOS tokens
-        # These store individual models' tokenized outputs
+            # These store individual models' tokenized outputs
             self.model_output_ids.append(model_output_ids)
+
+    def step(self):
+        """
+        Take a step of the ensembled model and fill a new beam. There are two kinds of steps, 
+        corresponding to the state of each beam item:
+        - **Sychronized**. In this case, all models exactly agree on the output.
+          Each model takes a step, and the outputs are compared and merged.
+        - **Unsynchronized**. In this case, the models have consistent outputs, but might
+          have generated different lengths. In this case, only the models that are behind are
+          allowed to take a step. From its output, we choose only items that are consistent
+          with the already-generated string.
+        """
+        # SYNCHRONIZED STEP
+        # For every model, take a step from its current states.
+        # Then filter its rows to only include those that are synchronized.
+        # Apply top-k selection to select the top-k candidate items for that model
+
+        for model, output_ids in zip(self.models, self.model_output_ids):
+            model_inputs = model.prepare_inputs_for_generation(output_ids)
+
+            step_outputs = model.step(model_inputs)
+
+            # Step
+            step_outputs = model.step(model_inputs)
+            next_token_logits = step_outputs.logits[:, -1, :]
+            # Massage the logits. This is how prefix decoding is enforced.
+            next_token_logits = model.logits_processor(model_output_ids, next_token_logits)
+            next_token_scores = nn.functional.softmax(
+                next_token_logits, dim=-1
+            )
 
 
 @torch.no_grad()
@@ -162,16 +192,21 @@ def ensemble_beam_search(
 
     beam = EnsembleBeam()
 
-    decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
+
+    STEP = 0
     while True:
-        STEP = output_ids[0].shape[-1]
+        STEP += 1
 
         # TODO: add preprocessing abstraction
 
         # transform each row of output_ids into tokens and print
         print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP)
-
-        beam.step()
+ 
+        candidates = []
+        # add
+        # heapq.heappush(candidates, BeamItem(0.0, output_ids[0].tolist())
+        # remove
+        smallest = heapq.heappop(candidates)
 
         # Take the next step of each model
         candidates = [model.topk() for model in models]
