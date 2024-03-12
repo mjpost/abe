@@ -93,6 +93,10 @@ class Bundle:
         self.output_attentions = False
         self.output_hidden_states = False
 
+        self.encoder_attentions = None
+        self.encoder_hidden_states = None
+        self.encoder_outputs = None
+
         self.logits_processor = LogitsProcessorList()
         if self.bos_force_token is not None:
             self.logits_processor.append(
@@ -111,33 +115,35 @@ class Bundle:
         encoder_input_ids = input.input_ids
 
         # Encoder outputs only need to be set once, then stored
-        encoder_outputs = self.model.get_encoder()(
+        self.encoder_outputs = self.model.get_encoder()(
             encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
         )
 
-        encoder_attentions = None
-        encoder_hiddne_states = None
+        self.encoder_attentions = None
+        self.encoder_hidden_states = None
         if self.config.is_encoder_decoder:
-            encoder_attentions = encoder_outputs.get("attentions")
-            encoder_hidden_states = (
-                encoder_outputs.get("hidden_states")
+            self.encoder_attentions = self.encoder_outputs.get("attentions")
+            self.encoder_hidden_states = (
+                self.encoder_outputs.get("hidden_states")
             )
 
         self.model_kwargs = {
-            "encoder_outputs": encoder_outputs,
+            "encoder_outputs": self.encoder_outputs,
         }
 
-        # Not sure all this garbage is needed.
+        # TODO: figure out what generation_config is
         generation_config = copy.deepcopy(self.model.generation_config)
         self.model_kwargs = generation_config.update(**self.model_kwargs)  # All unused kwargs must be model kwargs
         generation_config.validate()
         self.model._validate_model_kwargs(self.model_kwargs.copy())
 
+        # Now: initialize the output states
         model_output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long)
         model_output_ids = model_output_ids * self.model.config.decoder_start_token_id
 
         if self.model.bos_force_token:
             model_inputs = self.model.prepare_inputs_for_generation(model_output_ids)
+            model_inputs = self.prepare_inputs_for_generation(model_output_ids, **self.model_kwargs)
 
             # Step
             step_outputs = self.model.step(model_inputs)

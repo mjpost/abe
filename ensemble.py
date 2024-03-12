@@ -5,7 +5,7 @@ import heapq
 import sys
 import torch
 
-from typing import Optional, Union, List, Dict, Any
+from typing import Optional, Tuple, Union, List, Dict, Any
 from torch import nn, LongTensor
 
 from transformers import (
@@ -113,11 +113,16 @@ class Candidate:
     def __init__(self, item):
         pass
 
+def get_sync_mask(self):
+    """
+    Return a mask denoting items in the beam that are synchronized.
+    """
+    return self.synchronized
 
 @torch.no_grad()
 def ensemble_beam_search(
         input: str,
-        models: List[Bundle],
+        bundles: List[Bundle],
         max_length: Optional[int] = None,
         num_beams: int = 1,
         output_scores: Optional[bool] = True,
@@ -137,8 +142,8 @@ def ensemble_beam_search(
     - [ ] Generalize to n models  
     """
 
-    num_models = len(models)
-    device = models[0].model.device
+    num_models = len(bundles)
+    device = bundles[0].model.device
 
     # instantiate beam scorer
     beam_scorer = BeamSearchScorer(
@@ -147,10 +152,10 @@ def ensemble_beam_search(
         device=device,
     )
 
-    for model in models:
+    for bundle in bundles:
         # Initialize each model with the input
         # TODO: maybe this is where the first decoder token should also be set?
-        model.set_input(input, num_beams=num_beams)
+        bundle.set_input(input, num_beams=num_beams)
 
     batch_size = 1  # len(beam_scorer._beam_hyps)
     batch_beam_size = batch_size * num_beams
@@ -176,8 +181,18 @@ def ensemble_beam_search(
 
     model_output_ids = []
 
-    def compatible(cand1, cand2):
-        return models[0].tokenizer.decode(cand1.tokens) == models[0].tokenizer.decode(cand2.tokens)
+    def compatible(cand1, cand2) -> Tuple[bool, int]:
+        """
+        """
+        cand1_str = bundles[0].tokenizer.decode(cand1.tokens)
+        cand2_str = bundles[1].tokenizer.decode(cand2.tokens)
+
+        if len(cand1_str) < len(cand2_str):
+            return cand2_str.startswith(cand1_str), -1
+        elif len(cand1_str) > len(cand2_str):
+            return cand1_str.startswith(cand2_str), 1
+        else:
+            return cand1_str == cand2_str, 0
 
     STEP = 0
     while True:
@@ -191,9 +206,8 @@ def ensemble_beam_search(
         candidates = [ [] for _ in range(num_models) ]
 
         # Take the next step of each model
-        for model_i, model in enumerate(models):
-            model_inputs = model.prepare_inputs_for_generation(model_output_ids[model_i])
-            outputs = model.step(model_inputs)
+        for model_i, bundle in enumerate(bundles):
+            outputs = bundle.step()
 
                 # if output_attentions:
                 #     decoder_attentions += (
@@ -211,13 +225,13 @@ def ensemble_beam_search(
 
 
             # topk on synchronized items
-            topk = model.topk(outputs, self.get_sync_mask())
+            topk = bundle.topk(outputs, self.get_sync_mask())
             for item in topk:
                 cand = Candidate(item)
                 heapq.heappush(candidates[model_i], cand)
 
             # topk on items where this model is behind
-            topk = model.topk(outputs, self.get_behind_mask(model_i))
+            topk = bundle.topk(outputs, self.get_behind_mask(model_i))
             for item in topk:
                 # TODO: actually take the step, and push the item on the candidates list
                 cand = Candidate(item)
@@ -303,7 +317,7 @@ def ensemble_beam_search(
         # For each model, we need to convert the set of tokens into the model's private vocabulary
         # space. Unfortunately, these tokenizations may be of different lengths. We find the maximum
         # tokenization length and pad the others.
-        for modeli, model in enumerate(models):
+        for modeli, bundle in enumerate(bundles):
             # For each beam, tokenize the token using the private vocabulary
             new_token_seq = [torch.tensor(vocab.project_outta(token_id, modeli), device=device) for token_id in beam_next_tokens]
             # Turn that into a ragged zero-padded tensor
@@ -336,9 +350,9 @@ def ensemble_beam_search(
                         continue
 
                     # take a step in the model with the token
-                    model_inputs = model.prepare_inputs_for_generation(model_output_ids[modeli])
+                    model_inputs = bundle.prepare_inputs_for_generation(model_output_ids[modeli])
                     # Update the outputs
-                    step_outputs = model.step(model_inputs)
+                    step_outputs = bundle.step(model_inputs)
                     # next_token_logits = outputs.logits[:, -1, :]
                     # next_token_logits = model.logits_processor(output_ids, next_token_logits)
                     # next_token_scores = nn.functional.softmax(
