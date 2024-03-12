@@ -64,3 +64,9 @@ model name -> params(
 - "facebook/m2m100_418M": 128104 tokens
 - "facebook/nllb-200-distilled-600M": 256204 tokens
 - "facebook/nllb-moe-54b": 256204 tokens 
+
+## Usage
+
+    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/nllb-200-distilled-600M --num-beams 5
+    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/m2m100_1.2B --num-beams 5
+
