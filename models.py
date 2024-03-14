@@ -97,6 +97,8 @@ class Bundle:
         self.encoder_hidden_states = None
         self.encoder_outputs = None
 
+        self.output_ids = None
+
         self.logits_processor = LogitsProcessorList()
         if self.bos_force_token is not None:
             self.logits_processor.append(
@@ -138,60 +140,50 @@ class Bundle:
         self.model._validate_model_kwargs(self.model_kwargs.copy())
 
         # Now: initialize the output states
-        model_output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long)
-        model_output_ids = model_output_ids * self.model.config.decoder_start_token_id
+        self.output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long)
+        self.output_ids = self.output_ids * self.model.config.decoder_start_token_id
 
         if self.model.bos_force_token:
-            model_inputs = self.model.prepare_inputs_for_generation(model_output_ids)
-            model_inputs = self.prepare_inputs_for_generation(model_output_ids, **self.model_kwargs)
-
             # Step
-            step_outputs = self.model.step(model_inputs)
+            step_outputs = self.model.step(self.output_ids)
             next_token_logits = step_outputs.logits[:, -1, :]
             # print("* OUTPUTS.LOGITS", next_token_logits.shape)
 
             forced_tokens = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.model.bos_force_token
-            model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
+            self.output_ids = torch.cat([self.output_ids, forced_tokens], dim=-1)
 
             # Initialize models, including running over force BOS tokens
         # These store individual models' tokenized outputs
-        self.model_output_ids.append(model_output_ids)
+        self.model_output_ids.append(self.output_ids)
 
         return encoder_input_ids, encoder_outputs
     
-    def prepare_inputs_for_generation(self, outputs):
-        """
-        This is called at every step. It provides a way to modify the inputs before they are passed to the model.
-        """
-        return self.model.prepare_inputs_for_generation(outputs, **self.model_kwargs)
-
-    def step(self, model_inputs):
+    def step(self):
         """
         Takes a step in the generation loop.
         """
+        model_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
+
         outputs = self.model(
             **model_inputs,
             return_dict=True,
             output_attentions=self.output_attentions,
             output_hidden_states=self.output_hidden_states,
         )
+        
         return outputs
 
     def topk(self, model_inputs, mask, k=None):
         k = self.k if k is None else k
 
-        # Give the model its current outputs
-        # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
-        model_inputs = self.prepare_inputs_for_generation(model_inputs)
-
         # Step
-        step_outputs = self.step(model_inputs)
+        step_outputs = self.step()
         next_token_logits = step_outputs.logits[:, -1, :]
         # print("* OUTPUTS.LOGITS", next_token_logits.shape)
 
         # Massage the logits. This is how prefix decoding is enforced.
         next_token_logits = self.logits_processor(model_output_ids, next_token_logits)
-        next_token_scores = nn.functional.softmax(
+        next_token_scores = nn.functional.log_softmax(
             next_token_logits, dim=-1
         )  # (batch_size * num_beams, vocab_size)
 
