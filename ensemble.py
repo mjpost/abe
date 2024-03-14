@@ -20,7 +20,6 @@ from transformers.generation.utils import (
     GenerateBeamEncoderDecoderOutput,
 )
 from models import get_model_bundle, Bundle
-from vocab import SharedVocab
 
 __version__ = "0.0.1"
 
@@ -177,7 +176,7 @@ def ensemble_beam_search(
         beam_scores[i][:, 1:] = -1e9
         beam_scores[i] = beam_scores[i].view((batch_size * num_beams,))
 
-    beam = EnsembleBeam()
+    # beam = EnsembleBeam()
 
     model_output_ids = []
 
@@ -194,20 +193,19 @@ def ensemble_beam_search(
         else:
             return cand1_str == cand2_str, 0
 
-    STEP = 0
-    while True:
-        STEP += 1
+    while (step := 1) < args.max_output_tokens:
 
         # TODO: add preprocessing abstraction
 
         # transform each row of output_ids into tokens and print
-        # print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP)
  
         candidates = [ [] for _ in range(num_models) ]
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
             outputs = bundle.step()
+
+            bundle.print_beam(step)
 
                 # if output_attentions:
                 #     decoder_attentions += (
@@ -225,17 +223,17 @@ def ensemble_beam_search(
 
 
             # topk on synchronized items
-            topk = bundle.topk(outputs, self.get_sync_mask())
+            topk = bundle.topk(outputs)  # , self.get_sync_mask())
             for item in topk:
                 cand = Candidate(item)
                 heapq.heappush(candidates[model_i], cand)
 
             # topk on items where this model is behind
-            topk = bundle.topk(outputs, self.get_behind_mask(model_i))
-            for item in topk:
-                # TODO: actually take the step, and push the item on the candidates list
-                cand = Candidate(item)
-                heapq.heappush(candidates[model_i], cand)
+            # topk = bundle.topk(outputs, self.get_behind_mask(model_i))
+            # for item in topk:
+            #     # TODO: actually take the step, and push the item on the candidates list
+            #     cand = Candidate(item)
+            #     heapq.heappush(candidates[model_i], cand)
 
         lazy_items = []
         for i, cand1 in enumerate(candidates[0]):
@@ -380,15 +378,6 @@ def ensemble_beam_search(
     )
 
     return sequence_outputs["sequences"]
-
-
-def print_beam(num_beams, vocab, output_ids, batch_size, beam_scores, STEP):
-    print("BEAM", STEP)
-    for i in range(output_ids.shape[0]):
-        tokens = vocab.decode(output_ids[i].tolist())
-            # print(i, output_ids[i].tolist())
-        print(i, beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
-    print()
 
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):

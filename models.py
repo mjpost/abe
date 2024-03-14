@@ -75,16 +75,20 @@ class Bundle:
                  bos_force_token: Optional[int] = None,
                  is_encoder_decoder: Optional[bool] = False,
                  k=1,
+                 batch_size=1,
                  device=None,
                  **kwargs):
 
         self.model = model
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.bos_force_token = bos_force_token
         self.model_kwargs = kwargs
         self.k = k
         self.device = device
+        self.batch_size = batch_size
+
+        self.eos_token_id = self.tokenizer.eos_token_id
+        self.bos_force_token = bos_force_token
 
         # TODO: use config.is_encoder_decoder
         self.is_encoder_decoder = is_encoder_decoder
@@ -97,7 +101,10 @@ class Bundle:
         self.encoder_hidden_states = None
         self.encoder_outputs = None
 
+        # used to hold the generated tokens
         self.output_ids = None
+
+        self.beam_scores = None
 
         self.logits_processor = LogitsProcessorList()
         if self.bos_force_token is not None:
@@ -116,14 +123,20 @@ class Bundle:
         input = self.tokenizer(line, return_tensors=return_tensors)
         encoder_input_ids = input.input_ids
 
+        self.k = num_beams
+
         # Encoder outputs only need to be set once, then stored
         self.encoder_outputs = self.model.get_encoder()(
             encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
         )
 
+        self.beam_scores = torch.zeros((self.batch_size, num_beams), dtype=torch.float, device=self.device)
+        self.beam_scores[:, 1:] = -1e9
+        self.beam_scores = self.beam_scores.view((self.batch_size * num_beams,))
+
         self.encoder_attentions = None
         self.encoder_hidden_states = None
-        if self.config.is_encoder_decoder:
+        if self.is_encoder_decoder:
             self.encoder_attentions = self.encoder_outputs.get("attentions")
             self.encoder_hidden_states = (
                 self.encoder_outputs.get("hidden_states")
@@ -142,65 +155,76 @@ class Bundle:
         # Now: initialize the output states
         self.output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long)
         self.output_ids = self.output_ids * self.model.config.decoder_start_token_id
+        print("MODEL START TOKEN", self.model.config.decoder_start_token_id)
 
-        if self.model.bos_force_token:
-            # Step
-            step_outputs = self.model.step(self.output_ids)
-            next_token_logits = step_outputs.logits[:, -1, :]
-            # print("* OUTPUTS.LOGITS", next_token_logits.shape)
+        # Initialize models, including running over force BOS tokens
+        if self.bos_force_token:
 
-            forced_tokens = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.model.bos_force_token
+            forced_tokens = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.bos_force_token
             self.output_ids = torch.cat([self.output_ids, forced_tokens], dim=-1)
 
-            # Initialize models, including running over force BOS tokens
-        # These store individual models' tokenized outputs
-        self.model_output_ids.append(self.output_ids)
+            self.step()
+            # step_outputs = self.model.step()
+            # next_token_logits = step_outputs.logits[:, -1, :]
+            # print("* OUTPUTS.LOGITS", next_token_logits.shape)
 
-        return encoder_input_ids, encoder_outputs
+        # These store individual models' tokenized outputs
+        # self.model_output_ids.append(self.output_ids)
+
+        return encoder_input_ids, self.encoder_outputs
     
     def step(self):
         """
-        Takes a step in the generation loop.
+        Takes a step in the generation loop after preparing the inputs.
         """
-        model_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
 
-        outputs = self.model(
-            **model_inputs,
+        step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
+
+        step_outputs = self.model(
+            **step_inputs,
             return_dict=True,
             output_attentions=self.output_attentions,
             output_hidden_states=self.output_hidden_states,
         )
-        
-        return outputs
 
-    def topk(self, model_inputs, mask, k=None):
-        k = self.k if k is None else k
-
-        # Step
-        step_outputs = self.step()
         next_token_logits = step_outputs.logits[:, -1, :]
         # print("* OUTPUTS.LOGITS", next_token_logits.shape)
 
         # Massage the logits. This is how prefix decoding is enforced.
-        next_token_logits = self.logits_processor(model_output_ids, next_token_logits)
-        next_token_scores = nn.functional.log_softmax(
-            next_token_logits, dim=-1
+        next_token_logits_processed = self.logits_processor(self.output_ids, next_token_logits)
+        next_token_scores = torch.nn.functional.softmax(
+            next_token_logits_processed, dim=-1
         )  # (batch_size * num_beams, vocab_size)
 
-        # next_token_scores_processed = model.logits_processor(output_ids, next_token_scores)
-        # print(STEP, "Max score from model", modeli, torch.max(next_token_scores, dim=-1))
-        scores.append(next_token_scores)
+        return next_token_scores
 
-        next_token_scores = next_token_scores + model_beam_scores[:, None].expand_as(next_token_scores)
+    def print_beam(self, step=None):
+        print("BEAM", step)
+        for i in range(self.output_ids.shape[0]):
+            tokens = self.tokenizer.decode(self.output_ids[i].tolist())
+                # print(i, output_ids[i].tolist())
+            print(i, self.beam_scores.view(self.batch_size, self.k)[0][i], tokens, self.output_ids[i])
+        print()
+
+    def topk(self, model_inputs=None, mask=None, k=None):
+        k = self.k if k is None else k
+
+        # Give the model its current outputs
+        # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
+
+        # Step
+        next_token_scores = self.step()
+
+        next_token_scores = next_token_scores + self.beam_scores[:, None].expand_as(next_token_scores)
 
         # reshape for beam search
         vocab_size = next_token_scores.shape[-1]
-        next_token_scores = next_token_scores.view(batch_size, num_beams * vocab_size)
+        next_token_scores = next_token_scores.view(self.batch_size, k * vocab_size)
 
         # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
-        n_eos_tokens = len(eos_token_id) if eos_token_id else 0
+        n_eos_tokens = len(self.eos_token_id) if self.eos_token_id else 0
         next_token_scores, next_tokens = torch.topk(
-            next_token_scores, max(2, 1 + n_eos_tokens) * num_beams, dim=1, largest=True, sorted=True
+            next_token_scores, max(2, 1 + n_eos_tokens) * k, dim=1, largest=True, sorted=True
         )
 
         # print("TOPK", next_tokens.shape, next_tokens)
