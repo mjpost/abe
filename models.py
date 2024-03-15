@@ -88,6 +88,8 @@ class Bundle:
         self.batch_size = batch_size
 
         self.eos_token_id = self.tokenizer.eos_token_id
+        if isinstance(self.eos_token_id, int):
+            self.eos_token_id = [self.eos_token_id]
         self.bos_force_token = bos_force_token
 
         # TODO: use config.is_encoder_decoder
@@ -227,7 +229,7 @@ class Bundle:
             next_token_scores, max(2, 1 + n_eos_tokens) * k, dim=1, largest=True, sorted=True
         )
 
-        # print("TOPK", next_tokens.shape, next_tokens)
+        print("TOPK", next_tokens.shape, next_tokens)
 
         # TODO: create candidate items out of these
         next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")

@@ -108,9 +108,18 @@ class EnsembleBeam:
             )
 
 
-class Candidate:
-    def __init__(self, item):
-        pass
+class BeamItem:
+    """
+    Represents beam items.
+    """
+    def __init__(self, index, token, score):
+        self.index = index
+        self.token = token
+        self.score = score
+
+    def __lt__(self, other):
+        return self.score < other.score
+
 
 def get_sync_mask(self):
     """
@@ -223,9 +232,12 @@ def ensemble_beam_search(
 
 
             # topk on synchronized items
-            topk = bundle.topk(outputs)  # , self.get_sync_mask())
-            for item in topk:
-                cand = Candidate(item)
+            next_indices, next_tokens, next_scores = bundle.topk(outputs)  # , self.get_sync_mask())
+
+            # hard-code one batch
+            for index, token, score in zip(next_indices[0], next_tokens[0], next_scores[0]):
+                print("ITEM", index, token, score)
+                cand = BeamItem(index, token, score)
                 heapq.heappush(candidates[model_i], cand)
 
             # topk on items where this model is behind
@@ -234,6 +246,9 @@ def ensemble_beam_search(
             #     # TODO: actually take the step, and push the item on the candidates list
             #     cand = Candidate(item)
             #     heapq.heappush(candidates[model_i], cand)
+
+            for cand in candidates[model_i]:
+                print("CAND", bundle.tokenizer.decode(bundle.output_ids[cand.index] + [cand.token]))
 
         lazy_items = []
         for i, cand1 in enumerate(candidates[0]):
