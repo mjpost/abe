@@ -192,8 +192,9 @@ def ensemble_beam_search(
     def compatible(cand1, cand2) -> Tuple[bool, int]:
         """
         """
-        cand1_str = bundles[0].tokenizer.decode(cand1.tokens)
-        cand2_str = bundles[1].tokenizer.decode(cand2.tokens)
+        cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
+        cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)
+        print("COMPARING", cand1_str, " ||| ", cand2_str)
 
         if len(cand1_str) < len(cand2_str):
             return cand2_str.startswith(cand1_str), -1
@@ -249,8 +250,7 @@ def ensemble_beam_search(
 
             for cand in candidates[model_i]:
                 # concatenate the token to the beam
-                sequence = torch.cat([bundle.output_ids[cand.index], torch.tensor([cand.token])], dim=-1)
-                print("CAND", bundle.tokenizer.decode(sequence))
+                print("CAND", bundle.get_hyp_str(cand.index, cand.token))
 
         lazy_items = []
         for i, cand1 in enumerate(candidates[0]):

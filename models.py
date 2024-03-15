@@ -200,6 +200,10 @@ class Bundle:
 
         return next_token_scores
 
+    def get_hyp_str(self, beam_index, token_id):
+        sequence = torch.cat([self.output_ids[beam_index], torch.tensor([token_id])], dim=-1)
+        return self.tokenizer.decode(sequence)
+
     def print_beam(self, step=None):
         print("BEAM", step)
         for i in range(self.output_ids.shape[0]):
@@ -236,7 +240,6 @@ class Bundle:
         next_tokens = next_tokens % vocab_size
 
         return next_indices, next_tokens, next_token_scores
-
 
     def _extract_past_from_model_output(self, outputs: ModelOutput):
         past_key_values = None
