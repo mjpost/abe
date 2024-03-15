@@ -21,15 +21,10 @@ from transformers.generation.utils import (
 )
 from models import get_model_bundle, Bundle
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 STEP = 0
 
-class BeamItem:
-    def __init__(self, score, tokens):
-        self.score = score
-        self.tokens = [x for x in tokens]
-        self.synced = True
 
 
 class EnsembleBeam:
@@ -112,13 +107,32 @@ class BeamItem:
     """
     Represents beam items.
     """
-    def __init__(self, index, token, score):
-        self.index = index
-        self.token = token
-        self.score = score
+    def __init__(self, rank, index, token, score):
+        self.rank = rank  # its rank in the model's topk list
+        self.index = index  # the beam index it extends
+        self.token = token  # the token itself
+        self.score = score  # the score of the token
 
     def __lt__(self, other):
         return self.score < other.score
+
+
+class BeamItemPair:
+    """
+    Represents a pair of beam items.
+    """
+    def __init__(self, cand1, cand2):
+        self.cand1 = cand1
+        self.cand2 = cand2
+
+    def score(self):
+        """
+        Returns the interpolated score of the pair.
+        """
+        return (self.cand1.score + self.cand2.score) / 2
+
+    def __lt__(self, other):
+        return self.cand1.score() < other.cand1.score()
 
 
 def get_sync_mask(self):
@@ -178,30 +192,24 @@ def ensemble_beam_search(
     #     eos_token_id = [eos_token_id]
     # print("EOS", eos_token_id)
 
-    # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
-    # of the first beam are considered to avoid sampling the exact same tokens across all beams.
-    beam_scores = [torch.zeros((batch_size, num_beams), dtype=torch.float, device=device) for _ in range(num_models)]
-    for i in range(num_models):
-        beam_scores[i][:, 1:] = -1e9
-        beam_scores[i] = beam_scores[i].view((batch_size * num_beams,))
-
     # beam = EnsembleBeam()
-
-    model_output_ids = []
 
     def compatible(cand1, cand2) -> Tuple[bool, int]:
         """
         """
         cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
         cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)
-        print("COMPARING", cand1_str, " ||| ", cand2_str)
 
         if len(cand1_str) < len(cand2_str):
-            return cand2_str.startswith(cand1_str), -1
+            result = cand2_str.startswith(cand1_str), -1
         elif len(cand1_str) > len(cand2_str):
-            return cand1_str.startswith(cand2_str), 1
+            result = cand1_str.startswith(cand2_str), 1
         else:
-            return cand1_str == cand2_str, 0
+            result = cand1_str == cand2_str, 0
+
+        print("CMP", cand1_str, " ||| ", cand2_str, "=", result)
+
+        return result
 
     while (step := 1) < args.max_output_tokens:
 
@@ -213,7 +221,7 @@ def ensemble_beam_search(
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
-            outputs = bundle.step()
+            next_token_scores = bundle.step()
 
             bundle.print_beam(step)
 
@@ -231,15 +239,16 @@ def ensemble_beam_search(
                 #         else (outputs.hidden_states,)
                 #     )
 
+            sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
 
             # topk on synchronized items
-            next_indices, next_tokens, next_scores = bundle.topk(outputs)  # , self.get_sync_mask())
+            next_indices, next_tokens, next_scores = bundle.topk(sequence_scores)  # , self.get_sync_mask())
 
             # hard-code one batch
-            for index, token, score in zip(next_indices[0], next_tokens[0], next_scores[0]):
+            for rank, (index, token, score) in enumerate(zip(next_indices[0], next_tokens[0], next_scores[0])):
                 print("ITEM", index, token, score)
-                cand = BeamItem(index, token, score)
-                heapq.heappush(candidates[model_i], cand)
+                cand = BeamItem(rank, index, token, score)
+                candidates[model_i].append(cand)
 
             # topk on items where this model is behind
             # topk = bundle.topk(outputs, self.get_behind_mask(model_i))
@@ -252,22 +261,28 @@ def ensemble_beam_search(
                 # concatenate the token to the beam
                 print("CAND", bundle.get_hyp_str(cand.index, cand.token))
 
-        lazy_items = []
-        for i, cand1 in enumerate(candidates[0]):
-            for j, cand2 in enumerate(candidates[1]):
-                if compatible(cand1, cand2):
-                    heapq.heappush(lazy_items, LazyItem(cand1, cand2))
-                    candidates[0].remove(cand1)
-                    candidates[1].remove(cand2)
-        for j, cand2 in enumerate(candidates[1]):
-            for i, cand1 in enumerate(candidates[0]):
-                if compatible(cand1, cand2):
-                    heapq.heappush(lazy_items, LazyItem(cand1, cand2))
-                    candidates[0].remove(cand1)
-                    candidates[1].remove(cand2)
+        q = [ BeamItemPair( candidates[0][0], candidates[1][0] ) ]
+        selected = []
+        while len(q) > 0 and len(selected) < num_beams:
+            print("Q", q)
+            pair = heapq.heappop(q)
+            cand1 = pair.cand1
+            cand2 = pair.cand2
+            if compatible(cand1, cand2):
+                selected.append((cand1, cand2))
+                # add successors
+                heapq.heappush(q, BeamItemPair(candidates[0][cand1.rank + 1], candidates[1][cand1.rank + 1]))
+            else:
+                # add successors
+                heapq.heappush(q, BeamItemPair(cand1, candidates[1][cand2.rank+1]))
+                heapq.heappush(q, BeamItemPair(candidates[0][cand1.rank+1], cand2))
+
+        print("SELECTED")
+        for row in selected:
+            print(row)
+
 
         # Now, we do lazy k-best extraction from the pairs
-        next_beam = EnsembleBeam()
         while len(next_beam) < num_beams:
             # pop top item from lazy_items
             pair = heapq.heappop(lazy_items)

@@ -212,25 +212,20 @@ class Bundle:
             print(i, self.beam_scores.view(self.batch_size, self.k)[0][i], tokens, self.output_ids[i])
         print()
 
-    def topk(self, model_inputs=None, mask=None, k=None):
+    def topk(self, scores, mask=None, k=None):
         k = self.k if k is None else k
 
         # Give the model its current outputs
         # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
 
-        # Step
-        next_token_scores = self.step()
-
-        next_token_scores = next_token_scores + self.beam_scores[:, None].expand_as(next_token_scores)
-
         # reshape for beam search
-        vocab_size = next_token_scores.shape[-1]
-        next_token_scores = next_token_scores.view(self.batch_size, k * vocab_size)
+        vocab_size = scores.shape[-1]
+        scores = scores.view(self.batch_size, k * vocab_size)
 
         # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
         n_eos_tokens = len(self.eos_token_id) if self.eos_token_id else 0
-        next_token_scores, next_tokens = torch.topk(
-            next_token_scores, max(2, 1 + n_eos_tokens) * k, dim=1, largest=True, sorted=True
+        scores, next_tokens = torch.topk(
+            scores, max(2, 1 + n_eos_tokens) * k, dim=1, largest=True, sorted=True
         )
 
         print("TOPK", next_tokens.shape, next_tokens)
@@ -239,7 +234,7 @@ class Bundle:
         next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
         next_tokens = next_tokens % vocab_size
 
-        return next_indices, next_tokens, next_token_scores
+        return next_indices, next_tokens, scores
 
     def _extract_past_from_model_output(self, outputs: ModelOutput):
         past_key_values = None
