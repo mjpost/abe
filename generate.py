@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 
 import sys
+import models
+
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 def main(args):
     # m2m100_1.2B
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name)
+    bundle = models.get_model_bundle(args.model_name)
+    tokenizer = bundle.tokenizer  # = AutoTokenizer.from_pretrained(args.model_name)
+    model = bundle.model  # = AutoModelForSeq2SeqLM.from_pretrained(args.model_name)
 
     for line in sys.stdin:
         line = line.rstrip()
         inputs = tokenizer(line, return_tensors="pt")
 
         translated_tokens = model.generate(
-            **inputs, forced_bos_token_id=tokenizer.lang_code_to_id[args.target_lang], max_length=args.max_output_tokens
+            **inputs, forced_bos_token_id=bundle.bos_force_token, max_length=args.max_output_tokens
         )
 
         result = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0]
 
-        print(model.config.decoder_start_token_id, translated_tokens, result, sep="\n")
+        # print(model.config.decoder_start_token_id, translated_tokens, result, sep="\n")
+        print(result)
 
 
 if __name__ == "__main__":

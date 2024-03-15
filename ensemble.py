@@ -261,6 +261,7 @@ def ensemble_beam_search(
                 # concatenate the token to the beam
                 print("CAND", bundle.get_hyp_str(cand.index, cand.token))
 
+        # TODO: seed beam with the complete diagonal, and ensure each item is used only once
         q = [ BeamItemPair( candidates[0][0], candidates[1][0] ) ]
         selected = []
         while len(q) > 0 and len(selected) < len(candidates[0]) - 1:
@@ -316,20 +317,23 @@ def ensemble_beam_search(
             print("MODEL", i, "IS DONE", beam_scorer.is_done, stopping_criteria(bundle.output_ids, scores))
             break
 
+    sequence_outputs = []
     for i, bundle in enumerate(bundles):
-        sequence_outputs = beam_scorer.finalize(
-            bundle.output_ids,
-            bundle.beam_scores,
-            None,
-            None,
-            max_length=stopping_criteria.max_length,
-            pad_token_id=bundle.pad_token_id,
-            eos_token_id=bundle.eos_token_id,
-            beam_indices=bundle.beam_indices,
-            decoder_prompt_len=bundle.decoder_prompt_len,
+        sequence_outputs.append(
+            beam_scorer.finalize(
+                bundle.output_ids,
+                bundle.beam_scores,
+                None,
+                None,
+                max_length=stopping_criteria.max_length,
+                pad_token_id=bundle.pad_token_id,
+                eos_token_id=bundle.eos_token_id,
+                beam_indices=bundle.beam_indices,
+                decoder_prompt_len=bundle.decoder_prompt_len,
+            )
         )
 
-    return sequence_outputs["sequences"]
+    return sequence_outputs[0]["sequences"]
 
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
