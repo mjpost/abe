@@ -246,7 +246,7 @@ def ensemble_beam_search(
 
             # hard-code one batch
             for rank, (index, token, score) in enumerate(zip(next_indices[0], next_tokens[0], next_scores[0])):
-                print("ITEM", index, token, score)
+                # print("ITEM", index, token, score)
                 cand = BeamItem(rank, index, token, score)
                 candidates[model_i].append(cand)
 
@@ -263,8 +263,7 @@ def ensemble_beam_search(
 
         q = [ BeamItemPair( candidates[0][0], candidates[1][0] ) ]
         selected = []
-        while len(q) > 0 and len(selected) < num_beams:
-            print("Q", q)
+        while len(q) > 0 and len(selected) < len(candidates[0]) - 1:
             pair = heapq.heappop(q)
             cand1 = pair.cand1
             cand2 = pair.cand2
@@ -277,124 +276,44 @@ def ensemble_beam_search(
                 heapq.heappush(q, BeamItemPair(cand1, candidates[1][cand2.rank+1]))
                 heapq.heappush(q, BeamItemPair(candidates[0][cand1.rank+1], cand2))
 
-        print("SELECTED")
-        for row in selected:
-            print(row)
+        for i, bundle in enumerate(bundles):
+            next_token_scores = torch.tensor([selected[j][1].score for j in range(len(selected))], dtype=torch.float, device=device).unsqueeze(0)
+            next_tokens = torch.tensor([selected[j][i].token for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
+            next_indices = torch.tensor([selected[j][i].index for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
+            print("MODEL", i, next_token_scores, next_tokens, next_indices)
+            beam_outputs = beam_scorer.process(
+                bundle.output_ids,
+                next_token_scores,
+                next_tokens,
+                next_indices,
+                pad_token_id=bundle.pad_token_id,
+                eos_token_id=bundle.eos_token_id,
+                beam_indices=bundle.beam_indices,
+                decoder_prompt_len=bundle.decoder_prompt_len,
+            )
 
+            beam_scores = beam_outputs["next_beam_scores"]
+            beam_next_tokens = beam_outputs["next_beam_tokens"]
+            beam_idx = beam_outputs["next_beam_indices"]
 
-        # Now, we do lazy k-best extraction from the pairs
-        while len(next_beam) < num_beams:
-            # pop top item from lazy_items
-            pair = heapq.heappop(lazy_items)
+            bundle.output_ids = torch.cat([bundle.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
-            # add to next_beam
-            next_beam.append(pair)
+            # model_kwargs = self._update_model_kwargs_for_generation(
+            #     outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder, model_inputs=model_inputs
+            # )
+            # if model_kwargs["past_key_values"] is not None:
+            #     model_kwargs["past_key_values"] = self._temporary_reorder_cache(
+            #         model_kwargs["past_key_values"], beam_idx
+            #     )
 
-            # add sucessors
-            for succ in pair.successors():
-                heapq.heappush(lazy_items, succ)
+            # if return_dict_in_generate and output_scores:
+            #     beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
 
-        beam = next_beam
-
-        """
-        TODO: merge scores from different vocabularies
-        Each entry in `scores` is a tensor of shape (batch_size * num_beams, vocab_size).
-        We need to project each, using the `SharedVocab` object, into the shared vocabulary space.
-        This gives the ID in each original vocabulary that can be used to directly interpolate.
-        We then fast-forward multi-token models to catch up.
-        Not sure yet how to handle the fact that there will be different output lengths for each model.
-        """
-
-        # Why does the beam scorer care about the decoder prompt length?
-        beam_outputs = beam_scorer.process(
-            output_ids,
-            next_token_scores,
-            next_tokens,
-            next_indices,
-            pad_token_id=pad_token_id,
-            eos_token_id=eos_token_id,
-            beam_indices=beam_indices,
-            decoder_prompt_len=decoder_prompt_len,
-        )
-
-        beam_scores = beam_outputs["next_beam_scores"]
-        beam_next_tokens = beam_outputs["next_beam_tokens"]
-        beam_idx = beam_outputs["next_beam_indices"]
-
-        print("-> NEXT TOKENS", beam_next_tokens.shape, beam_next_tokens, vocab.decode(beam_next_tokens.tolist()))
-        print("-> NEXT INDICES", beam_idx)
-
-        # extend the sequence of generated output tokens
-        # The output IDs are in the shared vocabulary space; each model will map them back to their own vocabulary space
-        print("TOP BEAM", output_ids[beam_idx, :])
-        print("NEXT TOKENS", beam_next_tokens.unsqueeze(-1))
-        output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
-
-        # MJP: I don't know what this is so I'm commenting it out
-        # if model_kwargs["past_key_values"] is not None:
-        #     warnings.warn(f"past_key_values are not supported for ensemble generation")
-        #     model_kwargs["past_key_values"] = self._temporary_reorder_cache(
-        #         model_kwargs["past_key_values"], beam_idx
-        #     )
-
-        if return_dict_in_generate and output_scores:
-            beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
-
-        # increase cur_len
-        cur_len = cur_len + 1
-
-        # We now have a new token for every beam, but this token is in the global vocabulary.
-        # For each model, we need to convert the set of tokens into the model's private vocabulary
-        # space. Unfortunately, these tokenizations may be of different lengths. We find the maximum
-        # tokenization length and pad the others.
-        for modeli, bundle in enumerate(bundles):
-            # For each beam, tokenize the token using the private vocabulary
-            new_token_seq = [torch.tensor(vocab.project_outta(token_id, modeli), device=device) for token_id in beam_next_tokens]
-            # Turn that into a ragged zero-padded tensor
-            new_token_seq = torch.nn.utils.rnn.pad_sequence(new_token_seq, batch_first=True, padding_value=0).unsqueeze(-1)
-
-            # Add the first new token column to the model's output
-            print("CONCAT MODEL", modeli, "OLD BEAM", model_output_ids[modeli])
-            print("  CONCATTING NEW_TOKEN_SEQ", new_token_seq[:, 0])
-            model_output_ids[modeli] = torch.cat([model_output_ids[modeli], new_token_seq[:, 0]], dim=-1)
-
-            """
-            Consider a beam size of 3, and assume we have the following tokens in the global vocab: [ 3, 192, 99 ].
-            This gets tokenized into each model's vocab, which tokenization may be of different lengths. e.g.,
-
-            [ [ 17, 52, 0 ],   # 3 in global vocab
-                [ 9,  0,  0 ],   # 192 in global vocab
-                [ 14, 12, 0 ] ]  # 99 in global vocab
-
-            We now proceed column by column. We first concat the first column onto the beam. If there are more columns
-            (which there are here), we step the decoder, row by row, since we don't want to take a step on a zero.
-            """
-
-            # For each column of new tokens
-            for next_tokeni in range(1, new_token_seq.shape[1]):
-
-                # Go beam by beam, since we have to test for zeroes
-                for beam_i in range(num_beams):
-                    next_token = new_token_seq[beam_i, next_tokeni]
-                    if next_token == 0:
-                        continue
-
-                    # take a step in the model with the token
-                    model_inputs = bundle.prepare_inputs_for_generation(model_output_ids[modeli])
-                    # Update the outputs
-                    step_outputs = bundle.step(model_inputs)
-                    # next_token_logits = outputs.logits[:, -1, :]
-                    # next_token_logits = model.logits_processor(output_ids, next_token_logits)
-                    # next_token_scores = nn.functional.softmax(
-                    #     next_token_logits, dim=-1
-                    # )
-
-                # for each beam, add the current column to the outputs
-                model_output_ids[modeli] = torch.cat([model_output_ids[modeli], new_token_seq[:, next_tokeni]], dim=1)
-
-                # TODO: shift left over previous zeros anywhere
-
-        if beam_scorer.is_done or stopping_criteria(output_ids, scores):
+        # scores should be the distribution over the next token for each beam item
+        # That's a lot of data to keep track of!
+        scores = None
+        if beam_scorer.is_done or stopping_criteria(bundle.output_ids, scores):
+            print("MODEL", i, "IS DONE", beam_scorer.is_done, stopping_criteria(bundle.output_ids, scores))
             break
 
     sequence_outputs = beam_scorer.finalize(

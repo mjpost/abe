@@ -30,25 +30,25 @@ def get_model_bundle(
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
         tokenizer = NllbTokenizer.from_pretrained(model_name)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        bos_token_id = tokenizer.lang_code_to_id[lang_map[target_language]]
-        print("*", model_name, bos_token_id, file=sys.stderr)
-        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+        bos_force_token = tokenizer.lang_code_to_id[lang_map[target_language]]
+        print("*", model_name, bos_force_token, file=sys.stderr)
+        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_418M":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
         tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
-        bos_token_id = tokenizer.lang_code_to_id[target_language]
-        print("*", model_name, bos_token_id, file=sys.stderr)
-        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+        bos_force_token = tokenizer.lang_code_to_id[target_language]
+        print("*", model_name, bos_force_token, file=sys.stderr)
+        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_1.2B":
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
         tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
-        bos_token_id = tokenizer.lang_code_to_id[target_language]
-        print("*", model_name, bos_token_id, file=sys.stderr)
-        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_token_id, is_encoder_decoder=True)
+        bos_force_token = tokenizer.lang_code_to_id[target_language]
+        print("*", model_name, bos_force_token, file=sys.stderr)
+        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     else:
         raise ValueError(f"Unknown model name: {model_name}")
@@ -87,6 +87,13 @@ class Bundle:
         self.device = device
         self.batch_size = batch_size
 
+        batch_beam_size = batch_size * k
+        # use this to record historical beam indices if you choose
+        self.beam_indices = (
+            tuple(() for _ in range(batch_beam_size))
+        )
+
+        self.pad_token_id = self.tokenizer.pad_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
         if isinstance(self.eos_token_id, int):
             self.eos_token_id = [self.eos_token_id]
@@ -113,6 +120,8 @@ class Bundle:
             self.logits_processor.append(
                 ForcedBOSTokenLogitsProcessor(bos_force_token)
         )
+            
+        self.decoder_prompt_len = None
 
     def get_vocab(self):
         return self.tokenizer.get_vocab()
@@ -173,6 +182,8 @@ class Bundle:
         # These store individual models' tokenized outputs
         # self.model_output_ids.append(self.output_ids)
 
+        self.decoder_prompt_len = self.output_ids.shape[-1]
+
         return encoder_input_ids, self.encoder_outputs
     
     def step(self):
@@ -202,7 +213,7 @@ class Bundle:
 
     def get_hyp_str(self, beam_index, token_id):
         sequence = torch.cat([self.output_ids[beam_index], torch.tensor([token_id])], dim=-1)
-        return self.tokenizer.decode(sequence)
+        return self.tokenizer.decode(sequence, skip_special_tokens=True)
 
     def print_beam(self, step=None):
         print("BEAM", step)
@@ -223,12 +234,14 @@ class Bundle:
         scores = scores.view(self.batch_size, k * vocab_size)
 
         # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
+        # MJP: I don't understand the logic here. For some reason, we want _at least_ 2x as many topk
+        #      candidates as there are beams.
         n_eos_tokens = len(self.eos_token_id) if self.eos_token_id else 0
         scores, next_tokens = torch.topk(
             scores, max(2, 1 + n_eos_tokens) * k, dim=1, largest=True, sorted=True
         )
 
-        print("TOPK", next_tokens.shape, next_tokens)
+        # print("TOPK", next_tokens.shape, next_tokens)
 
         # TODO: create candidate items out of these
         next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
@@ -249,6 +262,32 @@ class Bundle:
         # if standardize_cache_format and hasattr(self, "_convert_to_standard_cache"):
         #     batch_size = outputs.logits.shape[0]
         #     past_key_values = self._convert_to_standard_cache(past_key_values, batch_size=batch_size)
+        return past_key_values
+
+    def _temporary_reorder_cache(self, past_key_values, beam_idx):
+        """
+        Temporary function to handle the different types of cache reordering processes while we roll out `Cache`.
+
+        TODO: standardize cache formats and make all models compatible with `Cache`. It would remove the need
+        for this function, with `Cache.reorder_cache` being the sole remaining code path
+        """
+        model_class = self.__class__.__name__.lower()
+        # Exception 1: code path for models using the legacy cache format
+        if isinstance(past_key_values, (tuple, list)):
+            past_key_values = self._reorder_cache(past_key_values, beam_idx)
+        # Exception 2: models with different cache formats. These are limited to `DynamicCache` until their
+        # cache format is standardized, to avoid adding complexity to the codebase.
+        elif "bloom" in model_class or "gptbigcode" in model_class:
+            if not isinstance(past_key_values, DynamicCache):
+                raise ValueError(
+                    f"Using an unsupported cache format with {model_class}. Currently, it only supports the "
+                    "legacy tuple format or `DynamicCache`"
+                )
+            past_key_values = self._reorder_cache(past_key_values, beam_idx)
+            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        # Standard code path: use the `Cache.reorder_cache`
+        else:
+            past_key_values.reorder_cache(beam_idx)
         return past_key_values
 
 

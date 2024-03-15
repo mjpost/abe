@@ -18,7 +18,7 @@ def main(args):
 
         result = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0]
 
-        print(result)
+        print(model.config.decoder_start_token_id, translated_tokens, result, sep="\n")
 
 
 if __name__ == "__main__":
