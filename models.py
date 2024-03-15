@@ -89,9 +89,10 @@ class Bundle:
 
         batch_beam_size = batch_size * k
         # use this to record historical beam indices if you choose
-        self.beam_indices = (
-            tuple(() for _ in range(batch_beam_size))
-        )
+        self.beam_indices = None
+        # self.beam_indices = (
+        #     tuple(() for _ in range(batch_beam_size))
+        # )
 
         self.pad_token_id = self.tokenizer.pad_token_id
         self.eos_token_id = self.tokenizer.eos_token_id

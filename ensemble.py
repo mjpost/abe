@@ -280,7 +280,7 @@ def ensemble_beam_search(
             next_token_scores = torch.tensor([selected[j][1].score for j in range(len(selected))], dtype=torch.float, device=device).unsqueeze(0)
             next_tokens = torch.tensor([selected[j][i].token for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
             next_indices = torch.tensor([selected[j][i].index for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
-            print("MODEL", i, next_token_scores, next_tokens, next_indices)
+            # print("MODEL", i, next_token_scores, next_tokens, next_indices)
             beam_outputs = beam_scorer.process(
                 bundle.output_ids,
                 next_token_scores,
@@ -316,17 +316,18 @@ def ensemble_beam_search(
             print("MODEL", i, "IS DONE", beam_scorer.is_done, stopping_criteria(bundle.output_ids, scores))
             break
 
-    sequence_outputs = beam_scorer.finalize(
-        output_ids,
-        beam_scores,
-        next_tokens,
-        next_indices,
-        pad_token_id=pad_token_id,
-        eos_token_id=eos_token_id,
-        max_length=stopping_criteria.max_length,
-        beam_indices=beam_indices,
-        decoder_prompt_len=decoder_prompt_len,
-    )
+    for i, bundle in enumerate(bundles):
+        sequence_outputs = beam_scorer.finalize(
+            bundle.output_ids,
+            bundle.beam_scores,
+            None,
+            None,
+            max_length=stopping_criteria.max_length,
+            pad_token_id=bundle.pad_token_id,
+            eos_token_id=bundle.eos_token_id,
+            beam_indices=bundle.beam_indices,
+            decoder_prompt_len=bundle.decoder_prompt_len,
+        )
 
     return sequence_outputs["sequences"]
 
