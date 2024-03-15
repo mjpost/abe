@@ -248,7 +248,9 @@ def ensemble_beam_search(
             #     heapq.heappush(candidates[model_i], cand)
 
             for cand in candidates[model_i]:
-                print("CAND", bundle.tokenizer.decode(bundle.output_ids[cand.index] + [cand.token]))
+                # concatenate the token to the beam
+                sequence = torch.cat([bundle.output_ids[cand.index], torch.tensor([cand.token])], dim=-1)
+                print("CAND", bundle.tokenizer.decode(sequence))
 
         lazy_items = []
         for i, cand1 in enumerate(candidates[0]):
