@@ -194,9 +194,7 @@ def ensemble_beam_search(
 
     # beam = EnsembleBeam()
 
-    def compatible(cand1, cand2) -> Tuple[bool, int]:
-        """
-        """
+    def compatible(cand1, cand2) -> bool:
         cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
         cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)
 
@@ -210,6 +208,9 @@ def ensemble_beam_search(
         print("CMP", cand1_str, " ||| ", cand2_str, "=", result)
 
         return result
+    
+    sync_mask = torch.tensor([[True for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.bool, device=device)
+    print("SYNC MASK", sync_mask)
 
     while (step := 1) < args.max_output_tokens:
 
@@ -217,7 +218,7 @@ def ensemble_beam_search(
 
         # transform each row of output_ids into tokens and print
  
-        candidates = [ [] for _ in range(num_models) ]
+        candidates = [[] for _ in range(num_models)]
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
@@ -242,9 +243,9 @@ def ensemble_beam_search(
             sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
 
             # topk on synchronized items
-            next_indices, next_tokens, next_scores = bundle.topk(sequence_scores)  # , self.get_sync_mask())
+            next_indices, next_tokens, next_scores = bundle.topk(sequence_scores, sync_mask)
 
-            # hard-code one batch
+            # TODO: extend to multiple batches
             for rank, (index, token, score) in enumerate(zip(next_indices[0], next_tokens[0], next_scores[0])):
                 # print("ITEM", index, token, score)
                 cand = BeamItem(rank, index, token, score)
@@ -263,15 +264,17 @@ def ensemble_beam_search(
 
         # TODO: seed beam with the complete diagonal, and ensure each item is used only once
         q = [ BeamItemPair( candidates[0][0], candidates[1][0] ) ]
-        selected = []
+        completed = {}  # mark completed items by rank
+        selected = []  # contains selected items
         while len(q) > 0 and len(selected) < len(candidates[0]) - 1:
             pair = heapq.heappop(q)
             cand1 = pair.cand1
             cand2 = pair.cand2
-            if compatible(cand1, cand2):
+            is_compat, direction = compatible(cand1, cand2)
+            if is_compat:
                 selected.append((cand1, cand2))
                 # add successors
-                heapq.heappush(q, BeamItemPair(candidates[0][cand1.rank + 1], candidates[1][cand1.rank + 1]))
+                heapq.heappush(q, BeamItemPair(candidates[0][cand1.rank + 1], candidates[1][cand1.rank + 1], synched=direction==0))
             else:
                 # add successors
                 heapq.heappush(q, BeamItemPair(cand1, candidates[1][cand2.rank+1]))

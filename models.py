@@ -230,16 +230,21 @@ class Bundle:
         # Give the model its current outputs
         # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
 
+        # set all values to -inf in rows corresponding to the mask
+        if mask is not None and torch.sum(mask, dim=-1):
+            scores = scores.clone().masked_fill(mask.unsqueeze(-1), float("-inf"))
+
         # reshape for beam search
         vocab_size = scores.shape[-1]
         scores = scores.view(self.batch_size, k * vocab_size)
 
         # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
-        # MJP: I don't understand the logic here. For some reason, we want _at least_ 2x as many topk
-        #      candidates as there are beams.
+        # MJP: In the worst case, we'd select all EOS tokens. To avoid that, we ensure that k is set such
+        # that we have at least 1 non-EOS token per beam.
         n_eos_tokens = len(self.eos_token_id) if self.eos_token_id else 0
+        num_wanted = k * max(2, 1 + n_eos_tokens)
         scores, next_tokens = torch.topk(
-            scores, max(2, 1 + n_eos_tokens) * k, dim=1, largest=True, sorted=True
+            scores, num_wanted, dim=1, largest=True, sorted=True
         )
 
         # print("TOPK", next_tokens.shape, next_tokens)
