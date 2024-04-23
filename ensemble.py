@@ -26,7 +26,6 @@ __version__ = "0.1.0"
 STEP = 0
 
 
-
 class EnsembleBeam:
     def __init__(self, models, batch_size, num_beams, target_language, device):
         self.batch_size = batch_size
@@ -260,7 +259,7 @@ def ensemble_beam_search(
 
             for cand in candidates[model_i]:
                 # concatenate the token to the beam
-                print("CAND", bundle.get_hyp_str(cand.index, cand.token))
+                print("MODEL", model_i, "CAND", bundle.get_hyp_str(cand.index, cand.token))
 
         # TODO: seed beam with the complete diagonal, and ensure each item is used only once
         q = [ BeamItemPair( candidates[0][0], candidates[1][0] ) ]

@@ -2,7 +2,7 @@ import copy
 import sys
 import torch
 
-from typing import Optional, Union, List
+from typing import Any, Dict, Optional, Union, List
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from transformers import (
@@ -210,7 +210,7 @@ class Bundle:
             next_token_logits_processed, dim=-1
         )  # (batch_size * num_beams, vocab_size)
 
-        return next_token_scores
+        return step_outputs, next_token_scores
 
     def get_hyp_str(self, beam_index, token_id):
         sequence = torch.cat([self.output_ids[beam_index], torch.tensor([token_id])], dim=-1)
@@ -297,29 +297,71 @@ class Bundle:
         return past_key_values
 
 
-    def update_model_kwargs_for_generation(self, outputs: ModelOutput):
+    def _update_model_kwargs_for_generation(
+        self,
+        outputs: ModelOutput,
+        model_kwargs: Dict[str, Any],
+        is_encoder_decoder: bool = False,
+    ) -> Dict[str, Any]:
         # update past_key_values
-        self.model_kwargs["past_key_values"] = self._extract_past_from_model_output(outputs)
+        model_kwargs["past_key_values"] = self._extract_past_from_model_output(outputs)
         if getattr(outputs, "state", None) is not None:
-            self.model_kwargs["state"] = outputs.state
+            model_kwargs["state"] = outputs.state
 
         # update token_type_ids with last value
-        if "token_type_ids" in self.model_kwargs:
-            token_type_ids = self.model_kwargs["token_type_ids"]
-            self.model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
+        if "token_type_ids" in model_kwargs:
+            token_type_ids = model_kwargs["token_type_ids"]
+            model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
 
-        if not self.is_encoder_decoder:
+        if not is_encoder_decoder:
             # update attention mask
-            if "attention_mask" in self.model_kwargs:
-                attention_mask = self.model_kwargs["attention_mask"]
-                self.model_kwargs["attention_mask"] = torch.cat(
+            if "attention_mask" in model_kwargs:
+                attention_mask = model_kwargs["attention_mask"]
+                model_kwargs["attention_mask"] = torch.cat(
                     [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
                 )
         else:
             # update decoder attention mask
-            if "decoder_attention_mask" in self.model_kwargs:
-                decoder_attention_mask = self.model_kwargs["decoder_attention_mask"]
-                self.model_kwargs["decoder_attention_mask"] = torch.cat(
+            if "decoder_attention_mask" in model_kwargs:
+                decoder_attention_mask = model_kwargs["decoder_attention_mask"]
+                model_kwargs["decoder_attention_mask"] = torch.cat(
                     [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], 1))],
                     dim=-1,
                 )
+
+        return model_kwargs
+
+    def _temporary_reorder_cache(self, past_key_values, beam_idx):
+        """
+        Temporary function to handle the different types of cache reordering processes while we roll out `Cache`.
+
+        TODO: standardize cache formats and make all models compatible with `Cache`. It would remove the need
+        for this function, with `Cache.reorder_cache` being the sole remaining code path
+        """
+        model_class = self.model.__class__.__name__.lower()
+        # Exception 1: code path for models using the legacy cache format
+        if isinstance(past_key_values, (tuple, list)):
+            past_key_values = self.model._reorder_cache(past_key_values, beam_idx)
+        # Exception 2: models with different cache formats. These are limited to `DynamicCache` until their
+        # cache format is standardized, to avoid adding complexity to the codebase.
+        elif "bloom" in model_class or "gptbigcode" in model_class:
+            if not isinstance(past_key_values, DynamicCache):
+                raise ValueError(
+                    f"Using an unsupported cache format with {model_class}. Currently, it only supports the "
+                    "legacy tuple format or `DynamicCache`"
+                )
+            past_key_values = self.model._reorder_cache(past_key_values, beam_idx)
+            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        # Standard code path: use the `Cache.reorder_cache`
+        else:
+            past_key_values.reorder_cache(beam_idx)
+        return past_key_values
+
+    def update_kwargs(self, outputs, beam_idx):
+        self.model_kwargs = self._update_model_kwargs_for_generation(
+            outputs, self.model_kwargs, is_encoder_decoder=self.is_encoder_decoder
+        )
+        if self.model_kwargs["past_key_values"] is not None:
+            self.model_kwargs["past_key_values"] = self._temporary_reorder_cache(
+                self.model_kwargs["past_key_values"], beam_idx
+            )
