@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 
+"""
+I'm using this script just to test translation, completely unwrapped from the Hugging Face library.
+"""
+
+
 import copy
+import random
 import sys
 import torch
 import warnings
@@ -177,9 +183,6 @@ def ensemble_beam_search(
           https://github.com/huggingface/transformers/blob/07e3454f034b4889925621e8e3253547d2a04aa7/src/transformers/generation/utils.py#L2764
         - Beam search support:
           https://github.com/huggingface/transformers/blob/main/src/transformers/generation/beam_search.py
-
-        TODO:
-        - [ ] Generalize to n models  
         """
 
         batch_size = len(beam_scorer._beam_hyps)
@@ -244,8 +247,6 @@ def ensemble_beam_search(
         beam_scores[:, 1:] = -1e9
         beam_scores = beam_scores.view((batch_size * num_beams,))
 
-        this_peer_finished = False  # used by synced_gpus only
-
         decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
         while True:
             # TODO: do this separately for each model
@@ -256,9 +257,12 @@ def ensemble_beam_search(
             # TODO: once per model
             outputs = model.step(model_inputs)
 
-            if synced_gpus and this_peer_finished:
-                cur_len = cur_len + 1
-                continue  # don't waste resources running the code we don't need
+            # Test adding random zeroes throughout
+            # if cur_len % 2 == 0 and cur_len < 12:
+            #     # append a column of zeros to output_ids
+            #     print(f"[{cur_len}] Appending zeros")
+            #     output_ids = torch.cat([output_ids, torch.zeros_like(output_ids[:, :1])], dim=-1)
+            #     print(output_ids[0, :])
 
             # TODO: once per model
             next_token_logits = outputs.logits[:, -1, :]
@@ -325,6 +329,27 @@ def ensemble_beam_search(
 
             # extend the sequence of generated output tokens
             output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
+
+            # test adding in random zeros, by replacing either the penultimate or last item in each
+            # beam entry (dim 1) with a zero
+            if cur_len > 3 and cur_len < 10:
+                output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
+                output_ids[:, -1] = tokenizer.pad_token_id
+                # for i in range(len(output_ids)):
+                #     # choose either -1 or -2
+                #     index = random.choice([-1, -2])
+                #     output_ids[i, index] = tokenizer.pad_token_id
+
+            def print_beam():
+                step = cur_len
+                print("BEAM", step)
+                for i in range(output_ids.shape[0]):
+                    tokens = tokenizer.decode(output_ids[i].tolist())
+                    # print(i, output_ids[i].tolist())
+                    print(i, beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
+                print()
+
+            print_beam()
 
             # I don't know what this is so I'm commenting it out
             # if model_kwargs["past_key_values"] is not None:
@@ -429,11 +454,11 @@ def main(args):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-name", "-m", type=str, default="facebook/nllb-200-distilled-600M", help="Model name")
+    parser.add_argument("--model-name", "-m", type=str, default="facebook/m2m100_418M", help="Model name")
     parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=5, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
-    parser.add_argument("--max-output-tokens", "-l", type=int, default=30, help="Maximum number of output tokens")
+    parser.add_argument("--max-output-tokens", "-l", type=int, default=100, help="Maximum number of output tokens")
     args = parser.parse_args()
 
     main(args)

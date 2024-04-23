@@ -70,3 +70,14 @@ model name -> params(
     echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/nllb-200-distilled-600M --num-beams 5 -l 10
     echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/m2m100_1.2B --num-beams 5 -l 10
 
+
+
+
+
+2   45   68   0    0      input IDs
+
+-1   0    1   0   -1      positions
+
+              X    X      position mask
+
+1    1    1   0    0      attention mask              
