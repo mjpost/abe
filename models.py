@@ -167,11 +167,18 @@ class Bundle:
         # Now: initialize the output states
         self.output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long)
         self.output_ids = self.output_ids * self.model.config.decoder_start_token_id
-        print("MODEL START TOKEN", self.model.config.decoder_start_token_id)
+        # print("MODEL START TOKEN", self.model.config.decoder_start_token_id)
+
+        batch_size = 1
+        batch_beam_size, cur_len = self.output_ids.shape
+        if num_beams * batch_size != batch_beam_size:
+            raise ValueError(
+                f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
+            )        
+
 
         # Initialize models, including running over force BOS tokens
         if self.bos_force_token:
-
             forced_tokens = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.bos_force_token
             self.output_ids = torch.cat([self.output_ids, forced_tokens], dim=-1)
 
@@ -295,7 +302,6 @@ class Bundle:
         else:
             past_key_values.reorder_cache(beam_idx)
         return past_key_values
-
 
     def _update_model_kwargs_for_generation(
         self,

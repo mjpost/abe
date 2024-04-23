@@ -44,7 +44,6 @@ def translate(
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
         return_dict_in_generate: Optional[bool] = None,
-        synced_gpus: bool = False,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
         r"""
         Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
@@ -59,14 +58,6 @@ def translate(
         num_beams = beam_scorer.num_beams
 
         model.set_input(input, num_beams=num_beams)
-        output_ids = torch.ones((num_beams, 1), device=model.model.device, dtype=torch.long)
-        output_ids = output_ids * model.model.config.decoder_start_token_id
-
-        batch_beam_size, cur_len = output_ids.shape
-        if num_beams * batch_size != batch_beam_size:
-            raise ValueError(
-                f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
-            )        
 
         # init values
         if max_length is not None:
@@ -112,12 +103,11 @@ def translate(
 
         # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
         # of the first beam are considered to avoid sampling the exact same tokens across all beams.
-        beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=output_ids.device)
+        beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=model.device)
         beam_scores[:, 1:] = -1e9
         beam_scores = beam_scores.view((batch_size * num_beams,))
 
-        decoder_prompt_len = output_ids.shape[-1]  # record the prompt length of decoder
-        while True:
+        for step in range(1, args.max_output_tokens + 1):
             # TODO: add preprocessing abstraction
             step_outputs, next_token_scores = model.step()
 
@@ -169,14 +159,14 @@ def translate(
 
             # stateless
             beam_outputs = beam_scorer.process(
-                output_ids,
+                model.output_ids,
                 next_token_scores,
                 next_tokens,
                 next_indices,
                 pad_token_id=pad_token_id,
                 eos_token_id=eos_token_id,
                 beam_indices=beam_indices,
-                decoder_prompt_len=decoder_prompt_len,
+                decoder_prompt_len=model.decoder_prompt_len,
             )
 
             beam_scores = beam_outputs["next_beam_scores"]
@@ -184,7 +174,7 @@ def translate(
             beam_idx = beam_outputs["next_beam_indices"]
 
             # extend the sequence of generated output tokens
-            output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
+            model.output_ids = torch.cat([model.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
             # test adding in random zeros, by replacing either the penultimate or last item in each
             # beam entry (dim 1) with a zero
@@ -198,22 +188,16 @@ def translate(
 
             model.update_kwargs(step_outputs, beam_idx)
 
-            model.print_beam()
+            # model.print_beam(step)
 
             if return_dict_in_generate and output_scores:
                 beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
 
-            # increase cur_len
-            cur_len = cur_len + 1
-
-            if beam_scorer.is_done or stopping_criteria(output_ids, scores):
-                if not synced_gpus:
-                    break
-                else:
-                    this_peer_finished = True
+            if beam_scorer.is_done or stopping_criteria(model.output_ids, scores):
+                break
 
         sequence_outputs = beam_scorer.finalize(
-            output_ids,
+            model.output_ids,
             beam_scores,
             next_tokens,
             next_indices,
@@ -221,7 +205,7 @@ def translate(
             eos_token_id=eos_token_id,
             max_length=stopping_criteria.max_length,
             beam_indices=beam_indices,
-            decoder_prompt_len=decoder_prompt_len,
+            decoder_prompt_len=model.decoder_prompt_len,
         )
 
         if return_dict_in_generate:
