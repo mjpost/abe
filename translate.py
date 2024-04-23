@@ -6,12 +6,10 @@ I'm using this script just to test translation, completely unwrapped from the Hu
 
 
 import copy
-import random
 import sys
 import torch
-import warnings
 
-from typing import Optional, Union, List
+from typing import Any, Dict, Optional, Union, List
 from torch import nn, LongTensor
 
 from transformers import (
@@ -96,6 +94,8 @@ class Model:
         self.input = self.tokenizer(line, return_tensors=return_tensors)
         encoder_input_ids = self.input.input_ids
 
+        # Additional model specific kwargs will be forwarded to the `forward` function of the model. If model is
+        # an encoder-decoder model the kwargs should include `encoder_outputs`.
         self.model_kwargs = {
             "encoder_outputs": self.model.get_encoder()(
                 encoder_input_ids.repeat_interleave(num_beams, dim=0), return_dict=True
@@ -109,6 +109,8 @@ class Model:
         return encoder_input_ids
     
     def prepare_inputs_for_generation(self, inputs):
+        # for key, value in self.model_kwargs.items():
+        #     print("PREPARE", key, len(value))
         return self.model.prepare_inputs_for_generation(inputs, **self.model_kwargs)
 
     def step(self, model_inputs):
@@ -120,8 +122,7 @@ class Model:
         )
         return outputs
 
-
-    def _extract_past_from_model_output(self, outputs: ModelOutput):
+    def _extract_past_from_model_output(self, outputs: ModelOutput, standardize_cache_format: bool = False):
         past_key_values = None
         if "past_key_values" in outputs:
             past_key_values = outputs.past_key_values
@@ -131,11 +132,82 @@ class Model:
             past_key_values = outputs.past_buckets_states
 
         # Bloom fix: standardizes the cache format when requested
-        # if standardize_cache_format and hasattr(self, "_convert_to_standard_cache"):
-        #     batch_size = outputs.logits.shape[0]
-        #     past_key_values = self._convert_to_standard_cache(past_key_values, batch_size=batch_size)
+        if standardize_cache_format and hasattr(self, "_convert_to_standard_cache"):
+            batch_size = outputs.logits.shape[0]
+            past_key_values = self._convert_to_standard_cache(past_key_values, batch_size=batch_size)
         return past_key_values
 
+    def _update_model_kwargs_for_generation(
+        self,
+        outputs: ModelOutput,
+        model_kwargs: Dict[str, Any],
+        is_encoder_decoder: bool = False,
+        standardize_cache_format: bool = False,
+    ) -> Dict[str, Any]:
+        # update past_key_values
+        model_kwargs["past_key_values"] = self._extract_past_from_model_output(
+            outputs, standardize_cache_format=False
+        )
+        if getattr(outputs, "state", None) is not None:
+            model_kwargs["state"] = outputs.state
+
+        # update token_type_ids with last value
+        if "token_type_ids" in model_kwargs:
+            token_type_ids = model_kwargs["token_type_ids"]
+            model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
+
+        if not is_encoder_decoder:
+            # update attention mask
+            if "attention_mask" in model_kwargs:
+                attention_mask = model_kwargs["attention_mask"]
+                model_kwargs["attention_mask"] = torch.cat(
+                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+                )
+        else:
+            # update decoder attention mask
+            if "decoder_attention_mask" in model_kwargs:
+                decoder_attention_mask = model_kwargs["decoder_attention_mask"]
+                model_kwargs["decoder_attention_mask"] = torch.cat(
+                    [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], 1))],
+                    dim=-1,
+                )
+
+        return model_kwargs
+
+    def _temporary_reorder_cache(self, past_key_values, beam_idx):
+        """
+        Temporary function to handle the different types of cache reordering processes while we roll out `Cache`.
+
+        TODO: standardize cache formats and make all models compatible with `Cache`. It would remove the need
+        for this function, with `Cache.reorder_cache` being the sole remaining code path
+        """
+        model_class = self.model.__class__.__name__.lower()
+        # Exception 1: code path for models using the legacy cache format
+        if isinstance(past_key_values, (tuple, list)):
+            past_key_values = self.model._reorder_cache(past_key_values, beam_idx)
+        # Exception 2: models with different cache formats. These are limited to `DynamicCache` until their
+        # cache format is standardized, to avoid adding complexity to the codebase.
+        elif "bloom" in model_class or "gptbigcode" in model_class:
+            if not isinstance(past_key_values, DynamicCache):
+                raise ValueError(
+                    f"Using an unsupported cache format with {model_class}. Currently, it only supports the "
+                    "legacy tuple format or `DynamicCache`"
+                )
+            past_key_values = self.model._reorder_cache(past_key_values, beam_idx)
+            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        # Standard code path: use the `Cache.reorder_cache`
+        else:
+            past_key_values.reorder_cache(beam_idx)
+        return past_key_values
+
+    def update_kwargs(self, outputs, beam_idx):
+        self.model_kwargs = self._update_model_kwargs_for_generation(
+            outputs, self.model_kwargs, is_encoder_decoder=self.is_encoder_decoder
+        )
+        if self.model_kwargs["past_key_values"] is not None:
+            self.model_kwargs["past_key_values"] = self._temporary_reorder_cache(
+                self.model_kwargs["past_key_values"], beam_idx
+            )        
 
     def update_model_kwargs_for_generation(self, outputs: ModelOutput):
         # update past_key_values
@@ -165,7 +237,7 @@ class Model:
                 )
 
 @torch.no_grad()
-def ensemble_beam_search(
+def translate(
         input: str,
         model: Model,
         beam_scorer: BeamScorer,
@@ -202,11 +274,11 @@ def ensemble_beam_search(
         logits_processor = model.logits_processor
         stopping_criteria = model.stopping_criteria
         if max_length is not None:
-            warnings.warn(
-                "`max_length` is deprecated in this function, use"
-                " `stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_length)])` instead.",
-                UserWarning,
-            )
+            # warnings.warn(
+            #     "`max_length` is deprecated in this function, use"
+            #     " `stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_length)])` instead.",
+            #     UserWarning,
+            # )
             stopping_criteria = validate_stopping_criteria(stopping_criteria, max_length)
 
         tokenizer = model.tokenizer
@@ -235,6 +307,7 @@ def ensemble_beam_search(
         config = model.model.config
 
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
+        # These are used only when returning the results at the end, not here for computation or caching.
         if return_dict_in_generate and config.is_encoder_decoder:
             encoder_attentions = model.model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
             encoder_hidden_states = (
@@ -252,6 +325,7 @@ def ensemble_beam_search(
             # TODO: do this separately for each model
             # TODO: add preprocessing abstraction
             # TODO: why is this done at every step? shouldn't it be done just once, outside the loop?
+
             model_inputs = model.prepare_inputs_for_generation(output_ids)
 
             # TODO: once per model
@@ -332,9 +406,9 @@ def ensemble_beam_search(
 
             # test adding in random zeros, by replacing either the penultimate or last item in each
             # beam entry (dim 1) with a zero
-            if cur_len > 3 and cur_len < 10:
-                output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
-                output_ids[:, -1] = tokenizer.pad_token_id
+            # if cur_len > 3 and cur_len < 10:
+            #     output_ids = torch.cat([output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
+            #     output_ids[:, -1] = tokenizer.pad_token_id
                 # for i in range(len(output_ids)):
                 #     # choose either -1 or -2
                 #     index = random.choice([-1, -2])
@@ -349,14 +423,9 @@ def ensemble_beam_search(
                     print(i, beam_scores.view(batch_size, num_beams)[0][i], tokens, output_ids[i])
                 print()
 
-            print_beam()
+            # print_beam()
 
-            # I don't know what this is so I'm commenting it out
-            # if model_kwargs["past_key_values"] is not None:
-            #     warnings.warn(f"past_key_values are not supported for ensemble generation")
-            #     model_kwargs["past_key_values"] = self._temporary_reorder_cache(
-            #         model_kwargs["past_key_values"], beam_idx
-            #     )
+            model.update_kwargs(outputs, beam_idx)
 
             if return_dict_in_generate and output_scores:
                 beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
@@ -443,7 +512,7 @@ def main(args):
         )
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, model, beam_scorer, max_length=args.max_output_tokens)
+        outputs = translate(line, model, beam_scorer, max_length=args.max_output_tokens)
 
         # decode with the combined vocabulary
         result = model.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
