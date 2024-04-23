@@ -58,7 +58,6 @@ class Model:
     def __init__(self,
                  model: Optional[PreTrainedModel] = None,
                  tokenizer: Optional[PreTrainedTokenizer] = None,
-                 logits_processor: Optional[LogitsProcessorList] = LogitsProcessorList(),
                  stopping_criteria: Optional[StoppingCriteriaList] = StoppingCriteriaList(),
                  max_length: Optional[int] = None,
                  pad_token_id: Optional[int] = None,
@@ -69,7 +68,6 @@ class Model:
 
         self.model = model
         self.tokenizer = tokenizer
-        self.logits_processor = logits_processor
         self.stopping_criteria = stopping_criteria
         self.max_length = max_length
         self.pad_token_id = pad_token_id
@@ -83,6 +81,7 @@ class Model:
         self.output_attentions = False
         self.output_hidden_states = False
 
+        self.logits_processor = LogitsProcessorList()
         if self.bos_force_token is not None:
             self.logits_processor.append(
                 ForcedBOSTokenLogitsProcessor(bos_force_token)
@@ -207,34 +206,8 @@ class Model:
         if self.model_kwargs["past_key_values"] is not None:
             self.model_kwargs["past_key_values"] = self._temporary_reorder_cache(
                 self.model_kwargs["past_key_values"], beam_idx
-            )        
+            )
 
-    def update_model_kwargs_for_generation(self, outputs: ModelOutput):
-        # update past_key_values
-        self.model_kwargs["past_key_values"] = self._extract_past_from_model_output(outputs)
-        if getattr(outputs, "state", None) is not None:
-            self.model_kwargs["state"] = outputs.state
-
-        # update token_type_ids with last value
-        if "token_type_ids" in self.model_kwargs:
-            token_type_ids = self.model_kwargs["token_type_ids"]
-            self.model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
-
-        if not self.is_encoder_decoder:
-            # update attention mask
-            if "attention_mask" in self.model_kwargs:
-                attention_mask = self.model_kwargs["attention_mask"]
-                self.model_kwargs["attention_mask"] = torch.cat(
-                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
-                )
-        else:
-            # update decoder attention mask
-            if "decoder_attention_mask" in self.model_kwargs:
-                decoder_attention_mask = self.model_kwargs["decoder_attention_mask"]
-                self.model_kwargs["decoder_attention_mask"] = torch.cat(
-                    [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], 1))],
-                    dim=-1,
-                )
 
 @torch.no_grad()
 def translate(
