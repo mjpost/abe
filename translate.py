@@ -142,20 +142,7 @@ def translate(
 
             sequence_scores = next_token_scores + model.beam_scores[:, None].expand_as(next_token_scores)
 
-            next_indices, next_tokens, next_scores = model.topk(sequence_scores)
-
-            # reshape for beam search
-            vocab_size = next_token_scores.shape[-1]
-            next_token_scores = next_token_scores.view(batch_size, num_beams * vocab_size)
-
-            # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
-            n_eos_tokens = len(eos_token_id) if eos_token_id else 0
-            next_token_scores, next_tokens = torch.topk(
-                next_token_scores, max(2, 1 + n_eos_tokens) * num_beams, dim=1, largest=True, sorted=True
-            )
-
-            next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
-            next_tokens = next_tokens % vocab_size
+            next_indices, next_tokens, next_token_scores = model.topk(sequence_scores)
 
             # stateless
             beam_outputs = beam_scorer.process(

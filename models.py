@@ -231,7 +231,7 @@ class Bundle:
             print(i, self.beam_scores.view(self.batch_size, self.k)[0][i], tokens, self.output_ids[i])
         print()
 
-    def topk(self, scores, mask=None, k=None):
+    def topk(self, sequence_scores, mask=None, k=None):
         k = self.k if k is None else k
 
         # Give the model its current outputs
@@ -239,19 +239,19 @@ class Bundle:
 
         # set all values to -inf in rows corresponding to the mask
         if mask is not None and torch.sum(mask, dim=-1):
-            scores = scores.clone().masked_fill(mask.unsqueeze(-1), float("-inf"))
+            sequence_scores = sequence_scores.clone().masked_fill(mask.unsqueeze(-1), float("-inf"))
 
         # reshape for beam search
-        vocab_size = scores.shape[-1]
-        scores = scores.view(self.batch_size, k * vocab_size)
+        vocab_size = sequence_scores.shape[-1]
+        sequence_scores = sequence_scores.view(self.batch_size, k * vocab_size)
 
         # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
         # MJP: In the worst case, we'd select all EOS tokens. To avoid that, we ensure that k is set such
         # that we have at least 1 non-EOS token per beam.
         n_eos_tokens = len(self.eos_token_id) if self.eos_token_id else 0
         num_wanted = k * max(2, 1 + n_eos_tokens)
-        scores, next_tokens = torch.topk(
-            scores, num_wanted, dim=1, largest=True, sorted=True
+        sequence_scores, next_tokens = torch.topk(
+            sequence_scores, num_wanted, dim=1, largest=True, sorted=True
         )
 
         # print("TOPK", next_tokens.shape, next_tokens)
@@ -260,7 +260,7 @@ class Bundle:
         next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
         next_tokens = next_tokens % vocab_size
 
-        return next_indices, next_tokens, scores
+        return next_indices, next_tokens, sequence_scores
 
     def _extract_past_from_model_output(self, outputs: ModelOutput):
         past_key_values = None
