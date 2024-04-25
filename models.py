@@ -8,12 +8,16 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 from transformers import (
     LogitsProcessorList,
     ForcedBOSTokenLogitsProcessor,
+    BeamSearchScorer,
     StoppingCriteriaList,
 )
 
 from transformers.generation.utils import (
     ModelOutput,
 )
+
+from transformers.generation.stopping_criteria import MaxLengthCriteria
+
 
 def get_model_bundle(
         model_name: str,
@@ -71,23 +75,19 @@ class Bundle:
     def __init__(self,
                  model: Optional[PreTrainedModel] = None,
                  tokenizer: Optional[PreTrainedTokenizer] = None,
-                 max_length: Optional[int] = None,
                  bos_force_token: Optional[int] = None,
                  is_encoder_decoder: Optional[bool] = False,
-                 k=1,
-                 batch_size=1,
                  device=None,
                  **kwargs):
 
         self.model = model
         self.tokenizer = tokenizer
-        self.max_length = max_length
         self.model_kwargs = kwargs
-        self.k = k
         self.device = device
-        self.batch_size = batch_size
 
-        batch_beam_size = batch_size * k
+        self.num_beams = None
+        self.batch_size = None
+
         # use this to record historical beam indices if you choose
         self.beam_indices = None
         # self.beam_indices = (
@@ -121,13 +121,19 @@ class Bundle:
             self.logits_processor.append(
                 ForcedBOSTokenLogitsProcessor(bos_force_token)
         )
-            
+
+        # init values
+        self.stopping_criteria = None
+
         self.decoder_prompt_len = None
+
+        # instantiate beam scorer
+        self.beam_scorer = None
 
     def get_vocab(self):
         return self.tokenizer.get_vocab()
 
-    def set_input(self, line: str, num_beams, return_tensors="pt"):
+    def set_input(self, line: str, num_beams, max_length=256, return_tensors="pt"):
         """
         Tokenize and encode the input. For seq2seq models, store the encoder outputs
         for passing in the generation loop in step().
@@ -135,7 +141,17 @@ class Bundle:
         input = self.tokenizer(line, return_tensors=return_tensors)
         encoder_input_ids = input.input_ids
 
-        self.k = num_beams
+        self.stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=max_length)])
+
+        # instantiate beam scorer
+        self.beam_scorer = BeamSearchScorer(
+            batch_size=1,
+            num_beams=num_beams,
+            device=self.device,
+        )
+
+        self.batch_size = 1
+        self.num_beams = num_beams
 
         # Encoder outputs only need to be set once, then stored
         self.encoder_outputs = self.model.get_encoder()(
@@ -194,12 +210,14 @@ class Bundle:
 
         return encoder_input_ids, self.encoder_outputs
     
-    def step(self):
+    def step(self, step_no=None):
         """
         Takes a step in the generation loop after preparing the inputs.
         """
 
         step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
+
+        # print("STEP", step_no, step_inputs)
 
         step_outputs = self.model(
             **step_inputs,
@@ -228,11 +246,11 @@ class Bundle:
         for i in range(self.output_ids.shape[0]):
             tokens = self.tokenizer.decode(self.output_ids[i].tolist())
                 # print(i, output_ids[i].tolist())
-            print(i, self.beam_scores.view(self.batch_size, self.k)[0][i], tokens, self.output_ids[i])
+            print(i, self.beam_scores.view(self.batch_size, self.num_beams)[0][i], tokens, self.output_ids[i])
         print()
 
     def topk(self, sequence_scores, mask=None, k=None):
-        k = self.k if k is None else k
+        k = self.num_beams if k is None else k
 
         # Give the model its current outputs
         # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
@@ -261,6 +279,47 @@ class Bundle:
         next_tokens = next_tokens % vocab_size
 
         return next_indices, next_tokens, sequence_scores
+
+    def beam_select(self,
+                    next_token_scores,
+                    next_tokens,
+                    next_indices):
+        """
+        Selects the next tokens for beam search
+        """
+                    # stateless
+        beam_outputs = self.beam_scorer.process(
+            self.output_ids,
+            next_token_scores,
+            next_tokens,
+            next_indices,
+            pad_token_id=self.pad_token_id,
+            eos_token_id=self.eos_token_id,
+            beam_indices=self.beam_indices,
+            decoder_prompt_len=self.decoder_prompt_len,
+        )
+
+        beam_scores = beam_outputs["next_beam_scores"]
+        beam_next_tokens = beam_outputs["next_beam_tokens"]
+        beam_idx = beam_outputs["next_beam_indices"]
+
+        return beam_scores, beam_next_tokens, beam_idx
+
+    def is_done(self):
+        return self.beam_scorer.is_done or self.stopping_criteria(self.output_ids, self.beam_scores)
+
+    def finalize(self):
+        return self.beam_scorer.finalize(
+            self.output_ids,
+            self.beam_scores,
+            None,
+            None,
+            pad_token_id=self.pad_token_id,
+            eos_token_id=self.eos_token_id,
+            max_length=self.stopping_criteria.max_length,
+            beam_indices=self.beam_indices,
+            decoder_prompt_len=self.decoder_prompt_len,
+        )
 
     def _extract_past_from_model_output(self, outputs: ModelOutput):
         past_key_values = None
@@ -363,9 +422,12 @@ class Bundle:
             past_key_values.reorder_cache(beam_idx)
         return past_key_values
 
-    def update_kwargs(self, outputs, beam_idx):
+    def update(self, beam_next_tokens, step_outputs, beam_idx):
+        # extend the sequence of generated output tokens
+        self.output_ids = torch.cat([self.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
+
         self.model_kwargs = self._update_model_kwargs_for_generation(
-            outputs, self.model_kwargs, is_encoder_decoder=self.is_encoder_decoder
+            step_outputs, self.model_kwargs, is_encoder_decoder=self.is_encoder_decoder
         )
         if self.model_kwargs["past_key_values"] is not None:
             self.model_kwargs["past_key_values"] = self._temporary_reorder_cache(
