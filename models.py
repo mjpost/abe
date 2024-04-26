@@ -24,18 +24,18 @@ def get_model_bundle(
         target_language: Optional[str] = "fr",
         ) -> "Bundle":
 
-    print(f"Instantiating model {model_name}", file=sys.stderr)
+    print(f"* Instantiating model {model_name}", file=sys.stderr)
 
     if model_name == "facebook/nllb-200-distilled-600M":
         lang_map = {
             "fr": "fra_Latn",
+            "de": "deu_Latn",
         }
 
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
         tokenizer = NllbTokenizer.from_pretrained(model_name)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        bos_force_token = tokenizer.lang_code_to_id[lang_map[target_language]]
-        print("*", model_name, bos_force_token, file=sys.stderr)
+        bos_force_token = tokenizer.lang_code_to_id[lang_map.get(target_language, target_language)]
         return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_418M":
@@ -43,7 +43,6 @@ def get_model_bundle(
         tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_force_token = tokenizer.lang_code_to_id[target_language]
-        print("*", model_name, bos_force_token, file=sys.stderr)
         return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     elif model_name == "facebook/m2m100_1.2B":
@@ -51,7 +50,6 @@ def get_model_bundle(
         tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_force_token = tokenizer.lang_code_to_id[target_language]
-        print("*", model_name, bos_force_token, file=sys.stderr)
         return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     else:
@@ -249,8 +247,11 @@ class Bundle:
             print(i, self.beam_scores.view(self.batch_size, self.num_beams)[0][i], tokens, self.output_ids[i])
         print()
 
-    def topk(self, sequence_scores, mask=None, k=None):
-        k = self.num_beams if k is None else k
+    def topk(self, sequence_scores, mask=None):
+        """
+        Select the top k items, ignoring any masked items.
+        """
+        k = self.num_beams
 
         # Give the model its current outputs
         # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
