@@ -220,8 +220,6 @@ class Bundle:
         step_outputs = self.model(
             **step_inputs,
             return_dict=True,
-            output_attentions=self.output_attentions,
-            output_hidden_states=self.output_hidden_states,
         )
 
         next_token_logits = step_outputs.logits[:, -1, :]
@@ -307,6 +305,7 @@ class Bundle:
         return beam_scores, beam_next_tokens, beam_idx
 
     def is_done(self):
+        print("IS_DONE", self.beam_scorer.is_done, self.stopping_criteria(self.output_ids, self.beam_scores))
         return self.beam_scorer.is_done or self.stopping_criteria(self.output_ids, self.beam_scores)
 
     def finalize(self):
@@ -423,14 +422,28 @@ class Bundle:
             past_key_values.reorder_cache(beam_idx)
         return past_key_values
 
-    def update(self, beam_next_tokens, step_outputs, beam_idx):
+    def update(self, beam_next_tokens, beam_idx, step_outputs=None):
+        """
+        Updates the model's beam sequences by extended the specified beam indices with the selected tokens.
+        If {step_outputs} is defined, it will update the cache, as well.
+
+        :param beam_next_tokens: The next tokens to append to the beam sequences
+        :param beam_idx: The beam indices that are being extended
+        :param step_outputs: The model outputs from the current step
+        """
+        if type(beam_next_tokens) is not torch.Tensor:
+            beam_next_tokens = torch.tensor(beam_next_tokens, device=self.device, dtype=torch.long)
+        if type(beam_idx) is not torch.Tensor:
+            beam_idx = torch.tensor(beam_idx, device=self.device, dtype=torch.long)
+
         # extend the sequence of generated output tokens
         self.output_ids = torch.cat([self.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
-        self.model_kwargs = self._update_model_kwargs_for_generation(
-            step_outputs, self.model_kwargs, is_encoder_decoder=self.is_encoder_decoder
-        )
-        if self.model_kwargs["past_key_values"] is not None:
-            self.model_kwargs["past_key_values"] = self._temporary_reorder_cache(
-                self.model_kwargs["past_key_values"], beam_idx
+        if step_outputs is not None:
+            self.model_kwargs = self._update_model_kwargs_for_generation(
+                step_outputs, self.model_kwargs, is_encoder_decoder=self.is_encoder_decoder
             )
+            if self.model_kwargs["past_key_values"] is not None:
+                self.model_kwargs["past_key_values"] = self._temporary_reorder_cache(
+                    self.model_kwargs["past_key_values"], beam_idx
+                )

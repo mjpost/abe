@@ -106,11 +106,13 @@ class BeamItem:
     """
     Represents beam items.
     """
-    def __init__(self, rank, index, token, score):
-        self.rank = rank  # its rank in the model's topk list
+    def __init__(self, index, token, score):
         self.index = index  # the beam index it extends
         self.token = token  # the token itself
         self.score = score  # the score of the token
+
+    def __str__(self):
+        return f"ITEM({self.index}, {self.token}, {self.score})"
 
     def __lt__(self, other):
         return self.score < other.score
@@ -120,9 +122,18 @@ class BeamItemPair:
     """
     Represents a pair of beam items.
     """
-    def __init__(self, cand1, cand2):
+    def __init__(
+            self,
+            cand1: BeamItem, 
+            cand1_rank: int,
+            cand2: BeamItem, 
+            cand2_rank: int,
+            synced=False):
         self.cand1 = cand1
+        self.cand1_rank = cand1_rank
         self.cand2 = cand2
+        self.cand2_rank = cand2_rank
+        self.synced = synced
 
     def score(self):
         """
@@ -130,8 +141,11 @@ class BeamItemPair:
         """
         return (self.cand1.score + self.cand2.score) / 2
 
+    def __str__(self):
+        return f"PAIR({self.cand1}, {self.cand2})"
+
     def __lt__(self, other):
-        return self.cand1.score() < other.cand1.score()
+        return self.cand1.score < other.cand1.score
 
 
 def get_sync_mask(self):
@@ -146,10 +160,6 @@ def ensemble_beam_search(
         bundles: List[Bundle],
         max_length: Optional[int] = None,
         num_beams: int = 1,
-        output_scores: Optional[bool] = True,
-        output_attentions: Optional[bool] = False,
-        output_hidden_states: Optional[bool] = False,
-        return_dict_in_generate: Optional[bool] = None,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
@@ -166,30 +176,12 @@ def ensemble_beam_search(
     num_models = len(bundles)
     device = bundles[0].model.device
 
-    # instantiate beam scorer
-    beam_scorer = BeamSearchScorer(
-        batch_size=1,
-        num_beams=num_beams,
-        device=device,
-    )
+    batch_size = 1  # len(beam_scorer._beam_hyps)
 
     for bundle in bundles:
         # Initialize each model with the input
         # TODO: maybe this is where the first decoder token should also be set?
-        bundle.set_input(input, num_beams=num_beams)
-
-    batch_size = 1  # len(beam_scorer._beam_hyps)
-    batch_beam_size = batch_size * num_beams
-
-    stopping_criteria = MaxLengthCriteria(max_length=max_length)
-
-    # if len(stopping_criteria) == 0:
-    #     warnings.warn("You don't have defined any stopping_criteria, this will likely loop forever", UserWarning)
-    # pad_token_id = vocab.pad_token_id
-    # eos_token_id = vocab.eos_token_id
-    # if isinstance(eos_token_id, int):
-    #     eos_token_id = [eos_token_id]
-    # print("EOS", eos_token_id)
+        bundle.set_input(input, num_beams=num_beams, max_length=max_length)
 
     # beam = EnsembleBeam()
 
@@ -204,14 +196,14 @@ def ensemble_beam_search(
         else:
             result = cand1_str == cand2_str, 0
 
-        print("CMP", cand1_str, " ||| ", cand2_str, "=", result)
+        # print("CMP", cand1_str, " ||| ", cand2_str, "=", result)
 
         return result
     
-    sync_mask = torch.tensor([[True for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.bool, device=device)
-    print("SYNC MASK", sync_mask)
+    is_synced_mask = torch.tensor([[True for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.bool, device=device)
+    print("SYNC MASK", is_synced_mask)
 
-    while (step := 1) < args.max_output_tokens:
+    for step_i in range(1, args.max_output_tokens + 1):
 
         # TODO: add preprocessing abstraction
 
@@ -221,33 +213,38 @@ def ensemble_beam_search(
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
-            next_token_scores = bundle.step()
+            bundle.print_beam(step_i)
 
-            bundle.print_beam(step)
-
-                # if output_attentions:
-                #     decoder_attentions += (
-                #         (outputs.decoder_attentions,) if self.config.is_encoder_decoder else (outputs.attentions,)
-                #     )
-                #     if self.config.is_encoder_decoder:
-                #         cross_attentions += (outputs.cross_attentions,)
-
-                # if output_hidden_states:
-                #     decoder_hidden_states += (
-                #         (outputs.decoder_hidden_states,)
-                #         if self.config.is_encoder_decoder
-                #         else (outputs.hidden_states,)
-                #     )
-
+            step_outputs, next_token_scores = bundle.step(step_i)
             sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
 
-            # topk on synchronized items
-            next_indices, next_tokens, next_scores = bundle.topk(sequence_scores, sync_mask)
+            # check if any values in sync_mask are True
+            if torch.any(is_synced_mask):
+                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, ~is_synced_mask)
+
+                # create a candidate out of it
+                for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
+                    # print("ITEM", index, token, score)
+                    cand = BeamItem(index, token, score)
+                    candidates[model_i].append(cand)            
+
+            # check if any values in sync_mask are False
+            if torch.any(~is_synced_mask):
+                # invert the mask
+                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, is_synced_mask)
+
+                # create a candidate out of it
+                for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
+                    # print("ITEM", index, token, score)
+                    cand = BeamItem(index, token, score)
+                    candidates[model_i].append(cand)
+
+            print("TOPK", model_i, next_tokens, next_token_scores)
 
             # TODO: extend to multiple batches
-            for rank, (index, token, score) in enumerate(zip(next_indices[0], next_tokens[0], next_scores[0])):
+            for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
                 # print("ITEM", index, token, score)
-                cand = BeamItem(rank, index, token, score)
+                cand = BeamItem(index, token, score)
                 candidates[model_i].append(cand)
 
             # topk on items where this model is behind
@@ -257,49 +254,71 @@ def ensemble_beam_search(
             #     cand = Candidate(item)
             #     heapq.heappush(candidates[model_i], cand)
 
-            for cand in candidates[model_i]:
+            # for cand in candidates[model_i]:
                 # concatenate the token to the beam
-                print("MODEL", model_i, "CAND", bundle.get_hyp_str(cand.index, cand.token))
+                # print("MODEL", model_i, "CAND", bundle.get_hyp_str(cand.index, cand.token))
+
+        # Now we have {topk} x {topk} items, which we need to merge into a single list that will
+        # become the new beam. However, (a) not all items are compatible and (b) we'd like to
+        # avoid quadratic exploration, while still ensuring that we explor a diverse set of 
+        # candidate pairs. To do this, we will walk the 2d grid, pushing joined candidates onto
+        # a heap. At the end, the heap will contain the topk items.
+        #
+        # Note that this is akin to k-best extraction with a monotonic combination function, such
+        # as for binarized parsing.
 
         # TODO: seed beam with the complete diagonal, and ensure each item is used only once
-        q = [ BeamItemPair( candidates[0][0], candidates[1][0] ) ]
-        completed = {}  # mark completed items by rank
+        q = [ BeamItemPair( candidates[0][0], 0, candidates[1][0], 0 ) ]
         selected = []  # contains selected items
-        while len(q) > 0 and len(selected) < len(candidates[0]) - 1:
+        while len(q) > 0 and len(selected) < num_beams:
             pair = heapq.heappop(q)
             cand1 = pair.cand1
             cand2 = pair.cand2
             is_compat, direction = compatible(cand1, cand2)
+            cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
+            cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)
+            # print(step_i, "POP", pair.cand1_rank, pair.cand2_rank, cand1_str, "<>", cand2_str, is_compat)
+
             if is_compat:
                 selected.append((cand1, cand2))
                 # add successors
-                heapq.heappush(q, BeamItemPair(candidates[0][cand1.rank + 1], candidates[1][cand1.rank + 1], synched=direction==0))
+                if pair.cand1_rank + 1 < len(candidates[0]) and pair.cand2_rank + 1 < len(candidates[1]):
+                    heapq.heappush(q, BeamItemPair(candidates[0][pair.cand1_rank + 1], pair.cand1_rank + 1, candidates[1][pair.cand2_rank + 1],  pair.cand2_rank + 1, synced=direction==0))
             else:
                 # add successors
-                heapq.heappush(q, BeamItemPair(cand1, candidates[1][cand2.rank+1]))
-                heapq.heappush(q, BeamItemPair(candidates[0][cand1.rank+1], cand2))
+                if pair.cand2_rank + 1 < len(candidates[1]):
+                    extend_1 = BeamItemPair(cand1, pair.cand1_rank, candidates[1][pair.cand2_rank+1], pair.cand2_rank + 1)
+                    # print("EXTEND", pair.cand2_rank + 1, len(candidates[1]), extend_1)
+                    heapq.heappush(q, extend_1)
 
+                if pair.cand1_rank + 1 < len(candidates[0]):
+                    extend_2 = BeamItemPair(candidates[0][pair.cand1_rank+1], pair.cand1_rank + 1, cand2, pair.cand2_rank)
+                    # print("EXTEND", pair.cand1_rank + 1, len(candidates[0]), extend_2)
+                    heapq.heappush(q, extend_2)
+
+        # Now enumerate the outputs and use them to update the beams in each sub-model
+        if len(selected) < num_beams:
+            print("* FATAL: not enough candidates", len(selected), num_beams)
+            sys.exit(1)
+
+        selected = selected[:num_beams]
+        for i in range(num_beams):
+            cand1, cand2 = selected[i]
+            cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
+            cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)            
+            print("SELECTED", i, cand1, cand1_str, cand2, cand2_str)
+        
         for i, bundle in enumerate(bundles):
-            next_token_scores = torch.tensor([selected[j][1].score for j in range(len(selected))], dtype=torch.float, device=device).unsqueeze(0)
-            next_tokens = torch.tensor([selected[j][i].token for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
-            next_indices = torch.tensor([selected[j][i].index for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
+            beam_tokens = [selected[j][i].token for j in range(len(selected))]
+            beam_indices = [selected[j][i].index for j in range(len(selected))]
+
+            print("MODEL", i, "STEP", step_i, "UPDATE", beam_tokens, beam_indices)
+            bundle.update(beam_tokens, beam_indices)
+
+            # next_token_scores = torch.tensor([selected[j][1].score for j in range(len(selected))], dtype=torch.float, device=device).unsqueeze(0)
+            # next_tokens = torch.tensor([selected[j][i].token for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
+            # next_indices = torch.tensor([selected[j][i].index for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
             # print("MODEL", i, next_token_scores, next_tokens, next_indices)
-            beam_outputs = beam_scorer.process(
-                bundle.output_ids,
-                next_token_scores,
-                next_tokens,
-                next_indices,
-                pad_token_id=bundle.pad_token_id,
-                eos_token_id=bundle.eos_token_id,
-                beam_indices=bundle.beam_indices,
-                decoder_prompt_len=bundle.decoder_prompt_len,
-            )
-
-            beam_scores = beam_outputs["next_beam_scores"]
-            beam_next_tokens = beam_outputs["next_beam_tokens"]
-            beam_idx = beam_outputs["next_beam_indices"]
-
-            bundle.output_ids = torch.cat([bundle.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
             # model_kwargs = self._update_model_kwargs_for_generation(
             #     outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder, model_inputs=model_inputs
@@ -312,30 +331,29 @@ def ensemble_beam_search(
             # if return_dict_in_generate and output_scores:
             #     beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
 
-        # scores should be the distribution over the next token for each beam item
-        # That's a lot of data to keep track of!
-        scores = None
-        if beam_scorer.is_done or stopping_criteria(bundle.output_ids, scores):
-            print("MODEL", i, "IS DONE", beam_scorer.is_done, stopping_criteria(bundle.output_ids, scores))
-            break
+            # scores should be the distribution over the next token for each beam item
+            # That's a lot of data to keep track of!
+            if bundle.is_done():
+                print("MODEL", i, "IS DONE at step", step_i)
 
-    sequence_outputs = []
-    for i, bundle in enumerate(bundles):
-        sequence_outputs.append(
-            beam_scorer.finalize(
-                bundle.output_ids,
-                bundle.beam_scores,
-                None,
-                None,
-                max_length=stopping_criteria.max_length,
-                pad_token_id=bundle.pad_token_id,
-                eos_token_id=bundle.eos_token_id,
-                beam_indices=bundle.beam_indices,
-                decoder_prompt_len=bundle.decoder_prompt_len,
-            )
-        )
+    for bundle in bundles:
+        sequence_outputs = bundle.finalize()
+    # for i, bundle in enumerate(bundles):
+    #     sequence_outputs.append(
+    #         beam_scorer.finalize(
+    #             bundle.output_ids,
+    #             bundle.beam_scores,
+    #             None,
+    #             None,
+    #             max_length=stopping_criteria.max_length,
+    #             pad_token_id=bundle.pad_token_id,
+    #             eos_token_id=bundle.eos_token_id,
+    #             beam_indices=bundle.beam_indices,
+    #             decoder_prompt_len=bundle.decoder_prompt_len,
+    #         )
+    #     )
 
-    return sequence_outputs[0]["sequences"]
+    return sequence_outputs["sequences"]
 
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
