@@ -106,13 +106,17 @@ class BeamItem:
     """
     Represents beam items.
     """
-    def __init__(self, index, token, score):
+    def __init__(self, index, token, score, model_no=None):
         self.index = index  # the beam index it extends
         self.token = token  # the token itself
         self.score = score  # the score of the token
+        self.model_no = model_no  # the model that generated this token (None: synced)
 
     def __str__(self):
-        return f"ITEM({self.index}, {self.token}, {self.score})"
+        if self.model_no:
+            return f"ITEM({self.index}, {self.token}, {self.score} #{self.model_no})"
+        else:
+            return f"ITEM({self.index}, {self.token}, {self.score})"
 
     def __lt__(self, other):
         return self.score < other.score
@@ -200,7 +204,11 @@ def ensemble_beam_search(
 
         return result
     
-    is_synced_mask = torch.tensor([[True for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.bool, device=device)
+    # Values:
+    # 0: model 0 is ahead
+    # 1: model 1 is ahead
+    # 2: models are in sync
+    is_synced_mask = torch.tensor([[2 for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.short, device=device)
     print("SYNC MASK", is_synced_mask)
 
     for step_i in range(1, args.max_output_tokens + 1):
@@ -219,8 +227,8 @@ def ensemble_beam_search(
             sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
 
             # check if any values in sync_mask are True
-            if torch.any(is_synced_mask):
-                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, ~is_synced_mask)
+            if torch.any(region := (is_synced_mask == 2)):
+                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, region)
 
                 # create a candidate out of it
                 for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
@@ -229,14 +237,14 @@ def ensemble_beam_search(
                     candidates[model_i].append(cand)            
 
             # check if any values in sync_mask are False
-            if torch.any(~is_synced_mask):
+            if torch.any(region := (is_synced_mask == model_i)):
                 # invert the mask
-                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, is_synced_mask)
+                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, region)
 
                 # create a candidate out of it
                 for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
                     # print("ITEM", index, token, score)
-                    cand = BeamItem(index, token, score)
+                    cand = BeamItem(index, token, score, model_no=model_i)
                     candidates[model_i].append(cand)
 
             print("TOPK", model_i, next_tokens, next_token_scores)

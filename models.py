@@ -245,9 +245,10 @@ class Bundle:
             print(i, self.beam_scores.view(self.batch_size, self.num_beams)[0][i], tokens, self.output_ids[i])
         print()
 
-    def topk(self, sequence_scores, mask=None):
+    def topk(self, sequence_scores, region=None):
         """
         Select the top k items, ignoring any masked items.
+        If set, `region` is used to limit the top-k selection to the specified rows of the beam.
         """
         k = self.num_beams
 
@@ -255,8 +256,8 @@ class Bundle:
         # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
 
         # set all values to -inf in rows corresponding to the mask
-        if mask is not None and torch.sum(mask, dim=-1):
-            sequence_scores = sequence_scores.clone().masked_fill(mask.unsqueeze(-1), float("-inf"))
+        if region is not None and torch.any(region):
+            sequence_scores = sequence_scores.clone().masked_fill((~region).unsqueeze(-1), float("-inf"))
 
         # reshape for beam search
         vocab_size = sequence_scores.shape[-1]
