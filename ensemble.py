@@ -208,8 +208,7 @@ def ensemble_beam_search(
     # 0: model 0 is ahead
     # 1: model 1 is ahead
     # 2: models are in sync
-    is_synced_mask = torch.tensor([[2 for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.short, device=device)
-    print("SYNC MASK", is_synced_mask)
+    sync_states = torch.tensor([[2 for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.short, device=device)
 
     for step_i in range(1, args.max_output_tokens + 1):
 
@@ -221,24 +220,14 @@ def ensemble_beam_search(
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
-            bundle.print_beam(step_i)
 
             step_outputs, next_token_scores = bundle.step(step_i)
             sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
 
-            # check if any values in sync_mask are True
-            if torch.any(region := (is_synced_mask == 2)):
-                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, region)
-
-                # create a candidate out of it
-                for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
-                    # print("ITEM", index, token, score)
-                    cand = BeamItem(index, token, score)
-                    candidates[model_i].append(cand)            
-
-            # check if any values in sync_mask are False
-            if torch.any(region := (is_synced_mask == model_i)):
-                # invert the mask
+            # do top-k selection where the model is behind or synced
+            print("STEP", step_i, "MODEL", model_i, "SYNC", sync_states, (sync_states == 2) | (sync_states == model_i))
+            bundle.print_beam(step_i)
+            if torch.any(region := ((sync_states == 2) | (sync_states == model_i))):
                 next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, region)
 
                 # create a candidate out of it
@@ -247,13 +236,15 @@ def ensemble_beam_search(
                     cand = BeamItem(index, token, score, model_no=model_i)
                     candidates[model_i].append(cand)
 
-            print("TOPK", model_i, next_tokens, next_token_scores)
+            # TODO: we may want to make two top-k calls per model, separating synced from non-synced rows for each model
 
-            # TODO: extend to multiple batches
-            for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
-                # print("ITEM", index, token, score)
-                cand = BeamItem(index, token, score)
-                candidates[model_i].append(cand)
+            # token_str = "  ".join([f"{str(int(i))}/{bundle.tokenizer.decode(t, skip_special_tokens=False)}/{t}" for i, t in zip(next_indices[0, :], next_tokens[0, :])])
+            # print("TOPK", model_i, token_str, next_token_scores)
+            print("TOPK", model_i)
+            for i, cand in enumerate(candidates[model_i]):
+                # get the token str from the cand.token using the tokenizer
+                token_str = bundle.tokenizer.decode([int(cand.token)], skip_special_tokens=False, clean_up_tokenization_spaces=False)
+                print("->", i, cand, token_str)
 
             # topk on items where this model is behind
             # topk = bundle.topk(outputs, self.get_behind_mask(model_i))
@@ -278,35 +269,43 @@ def ensemble_beam_search(
         # TODO: seed beam with the complete diagonal, and ensure each item is used only once
         q = [ BeamItemPair( candidates[0][0], 0, candidates[1][0], 0 ) ]
         selected = []  # contains selected items
+        seen = set()
         while len(q) > 0 and len(selected) < num_beams:
             pair = heapq.heappop(q)
+            seen.add((pair.cand1_rank, pair.cand2_rank))
             cand1 = pair.cand1
             cand2 = pair.cand2
             is_compat, direction = compatible(cand1, cand2)
             cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
             cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)
-            # print(step_i, "POP", pair.cand1_rank, pair.cand2_rank, cand1_str, "<>", cand2_str, is_compat)
+            # print(step_i, "POP", pair.score(), pair.cand1_rank, pair.cand2_rank, cand1_str, "<>", cand2_str, is_compat)
+
+
+            # add successor item
+            ranks = (pair.cand1_rank + 1, pair.cand2_rank + 1)
+            if ranks[0] < len(candidates[0]) and ranks[1] < len(candidates[1]) and ranks not in seen:
+                heapq.heappush(q, BeamItemPair(candidates[0][ranks[0]], ranks[0], candidates[1][ranks[1]], ranks[1], synced=direction==0))
 
             if is_compat:
                 selected.append((cand1, cand2))
-                # add successors
-                if pair.cand1_rank + 1 < len(candidates[0]) and pair.cand2_rank + 1 < len(candidates[1]):
-                    heapq.heappush(q, BeamItemPair(candidates[0][pair.cand1_rank + 1], pair.cand1_rank + 1, candidates[1][pair.cand2_rank + 1],  pair.cand2_rank + 1, synced=direction==0))
             else:
                 # add successors
-                if pair.cand2_rank + 1 < len(candidates[1]):
-                    extend_1 = BeamItemPair(cand1, pair.cand1_rank, candidates[1][pair.cand2_rank+1], pair.cand2_rank + 1)
+                ranks = (pair.cand1_rank + 1, pair.cand2_rank)
+                if ranks[0] < len(candidates[0]) and ranks not in seen:
+                    extend_0 = BeamItemPair(candidates[0][ranks[0]], ranks[0], cand2, ranks[1])
+                    # print("EXTEND", pair.cand1_rank + 1, len(candidates[0]), extend_2)
+                    heapq.heappush(q, extend_0)
+
+                ranks = (pair.cand1_rank, pair.cand2_rank + 1)
+                if ranks[1] < len(candidates[1]) and ranks not in seen:
+                    extend_1 = BeamItemPair(cand1, ranks[0], candidates[1][ranks[1]], ranks[1])
                     # print("EXTEND", pair.cand2_rank + 1, len(candidates[1]), extend_1)
                     heapq.heappush(q, extend_1)
 
-                if pair.cand1_rank + 1 < len(candidates[0]):
-                    extend_2 = BeamItemPair(candidates[0][pair.cand1_rank+1], pair.cand1_rank + 1, cand2, pair.cand2_rank)
-                    # print("EXTEND", pair.cand1_rank + 1, len(candidates[0]), extend_2)
-                    heapq.heappush(q, extend_2)
 
         # Now enumerate the outputs and use them to update the beams in each sub-model
         if len(selected) < num_beams:
-            print("* FATAL: not enough candidates", len(selected), num_beams)
+            print("* FATAL: not enough candidates", len(selected), "need", num_beams)
             sys.exit(1)
 
         selected = selected[:num_beams]
@@ -319,9 +318,10 @@ def ensemble_beam_search(
         for i, bundle in enumerate(bundles):
             beam_tokens = [selected[j][i].token for j in range(len(selected))]
             beam_indices = [selected[j][i].index for j in range(len(selected))]
+            beam_scores = [selected[j][i].score for j in range(len(selected))]
 
             print("MODEL", i, "STEP", step_i, "UPDATE", beam_tokens, beam_indices)
-            bundle.update(beam_tokens, beam_indices)
+            bundle.update(beam_tokens, beam_indices, beam_scores)
 
             # next_token_scores = torch.tensor([selected[j][1].score for j in range(len(selected))], dtype=torch.float, device=device).unsqueeze(0)
             # next_tokens = torch.tensor([selected[j][i].token for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
@@ -402,7 +402,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
     parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
-    parser.add_argument("--num-beams", "-b", type=int, default=2, help="Number of beams for beam search")
+    parser.add_argument("--num-beams", "-b", type=int, default=4, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
     parser.add_argument("--max-output-tokens", "-l", type=int, default=30, help="Maximum number of output tokens")
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")

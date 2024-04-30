@@ -72,13 +72,15 @@ def translate(
             ## TODO (main): merge the outputs, create synced / unsynced beam item abstractions!
             ## 
 
+            model.print_beam(step_i)
+
             sequence_scores = next_token_scores + model.beam_scores[:, None].expand_as(next_token_scores)
 
             next_indices, next_tokens, next_token_scores = model.topk(sequence_scores)
 
             beam_scores, beam_next_tokens, beam_idx = model.beam_select(next_token_scores, next_tokens, next_indices)
 
-            model.update(beam_next_tokens, beam_idx, step_outputs)
+            model.update(beam_next_tokens, beam_idx, beam_scores, step_outputs)
 
 
             # test adding in random zeros, by replacing either the penultimate or last item in each

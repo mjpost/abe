@@ -245,7 +245,7 @@ class Bundle:
             print(i, self.beam_scores.view(self.batch_size, self.num_beams)[0][i], tokens, self.output_ids[i])
         print()
 
-    def topk(self, sequence_scores, region=None):
+    def topk(self, sequence_scores, region=None, multiplier=5):
         """
         Select the top k items, ignoring any masked items.
         If set, `region` is used to limit the top-k selection to the specified rows of the beam.
@@ -255,8 +255,8 @@ class Bundle:
         # Give the model its current outputs
         # print("MODEL", modeli, "GIVING INPUTS", model_output_ids)
 
-        # set all values to -inf in rows corresponding to the mask
-        if region is not None and torch.any(region):
+        # set all values to -inf in rows not in the selectable region
+        if region is not None and not torch.all(region):
             sequence_scores = sequence_scores.clone().masked_fill((~region).unsqueeze(-1), float("-inf"))
 
         # reshape for beam search
@@ -267,16 +267,16 @@ class Bundle:
         # MJP: In the worst case, we'd select all EOS tokens. To avoid that, we ensure that k is set such
         # that we have at least 1 non-EOS token per beam.
         n_eos_tokens = len(self.eos_token_id) if self.eos_token_id else 0
-        num_wanted = k * max(2, 1 + n_eos_tokens)
+        num_wanted = k * max(multiplier, 1 + n_eos_tokens)
         sequence_scores, next_tokens = torch.topk(
             sequence_scores, num_wanted, dim=1, largest=True, sorted=True
         )
 
-        # print("TOPK", next_tokens.shape, next_tokens)
-
         # TODO: create candidate items out of these
         next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
         next_tokens = next_tokens % vocab_size
+
+        print("TOPK", next_tokens.shape, next_indices, next_tokens)
 
         return next_indices, next_tokens, sequence_scores
 
@@ -285,7 +285,7 @@ class Bundle:
                     next_tokens,
                     next_indices):
         """
-        Selects the next tokens for beam search
+        Uses the beam scorer to select the tokens that can be used for the next beam.
         """
                     # stateless
         beam_outputs = self.beam_scorer.process(
@@ -319,6 +319,8 @@ class Bundle:
             beam_next_tokens = torch.tensor(beam_next_tokens, device=self.device, dtype=torch.long)
         if type(beam_idx) is not torch.Tensor:
             beam_idx = torch.tensor(beam_idx, device=self.device, dtype=torch.long)
+        if type(beam_scores) is not torch.Tensor:
+            beam_scores = torch.tensor(beam_scores, device=self.device, dtype=torch.float)
 
         # update the beam scores
         self.beam_scores = beam_scores
