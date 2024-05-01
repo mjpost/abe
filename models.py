@@ -76,12 +76,14 @@ class Bundle:
                  bos_force_token: Optional[int] = None,
                  is_encoder_decoder: Optional[bool] = False,
                  device=None,
+                 model_i: Optional[int] = None,
                  **kwargs):
 
         self.model = model
         self.tokenizer = tokenizer
         self.model_kwargs = kwargs
         self.device = device
+        self.model_i = model_i
 
         self.num_beams = None
         self.batch_size = None
@@ -237,12 +239,15 @@ class Bundle:
         sequence = torch.cat([self.output_ids[beam_index], torch.tensor([token_id])], dim=-1)
         return self.tokenizer.decode(sequence, skip_special_tokens=True)
 
-    def print_beam(self, step=None):
-        print("BEAM", step)
+    def print_beam(self, model_i=None, step=None):
+        if model_i is not None:
+            print(f"BEAM {step} MODEL {model_i}")
+        else:
+            print("BEAM", step)
         for i in range(self.output_ids.shape[0]):
-            tokens = self.tokenizer.decode(self.output_ids[i].tolist())
+            tokens = self.tokenizer.convert_ids_to_tokens(self.output_ids[i].tolist())
                 # print(i, output_ids[i].tolist())
-            print(i, self.beam_scores.view(self.batch_size, self.num_beams)[0][i], tokens, self.output_ids[i])
+            print(i, f"len={len(tokens)}", self.beam_scores.view(self.batch_size, self.num_beams)[0][i], " ".join(tokens), self.output_ids[i])
         print()
 
     def topk(self, sequence_scores, region=None, multiplier=5):
@@ -287,7 +292,7 @@ class Bundle:
         """
         Uses the beam scorer to select the tokens that can be used for the next beam.
         """
-                    # stateless
+        # stateless
         beam_outputs = self.beam_scorer.process(
             self.output_ids,
             next_token_scores,
@@ -337,9 +342,14 @@ class Bundle:
                     self.model_kwargs["past_key_values"], beam_idx
                 )
 
-    def is_done(self):
-        # print("IS_DONE", self.beam_scorer.is_done, self.stopping_criteria(self.output_ids, self.beam_scores))
-        return self.beam_scorer.is_done or self.stopping_criteria(self.output_ids, self.beam_scores)
+    def is_done(self, token_id):
+        return 
+
+    def beam_is_done(self):
+        beam_scorer_done = self.beam_scorer.is_done
+        stopping_criteria_done = self.stopping_criteria(self.output_ids, self.beam_scores)
+        print("IS_DONE", "beam=", beam_scorer_done, "stop=", stopping_criteria_done)
+        return beam_scorer_done or stopping_criteria_done
 
     def finalize(self):
         return self.beam_scorer.finalize(

@@ -95,7 +95,7 @@ def translate(
 
 
             # model.print_beam(step)
-            if model.is_done():
+            if model.beam_is_done():
                 break
 
         sequence_outputs = model.finalize()

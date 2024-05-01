@@ -128,28 +128,28 @@ class BeamItemPair:
     """
     def __init__(
             self,
+            cand0: BeamItem, 
+            cand0_rank: int,
             cand1: BeamItem, 
             cand1_rank: int,
-            cand2: BeamItem, 
-            cand2_rank: int,
             synced=False):
+        self.cand0 = cand0
+        self.cand0_rank = cand0_rank
         self.cand1 = cand1
         self.cand1_rank = cand1_rank
-        self.cand2 = cand2
-        self.cand2_rank = cand2_rank
         self.synced = synced
 
     def score(self):
         """
         Returns the interpolated score of the pair.
         """
-        return (self.cand1.score + self.cand2.score) / 2
+        return (self.cand0.score + self.cand1.score) / 2
 
     def __str__(self):
-        return f"PAIR({self.cand1}, {self.cand2})"
+        return f"PAIR({self.cand0}, {self.cand1})"
 
     def __lt__(self, other):
-        return self.cand1.score < other.cand1.score
+        return self.cand0.score < other.cand1.score
 
 
 def get_sync_mask(self):
@@ -226,7 +226,7 @@ def ensemble_beam_search(
 
             # do top-k selection where the model is behind or synced
             print("STEP", step_i, "MODEL", model_i, "SYNC", sync_states, (sync_states == 2) | (sync_states == model_i))
-            bundle.print_beam(step_i)
+            bundle.print_beam(model_i, step_i)
             if torch.any(region := ((sync_states == 2) | (sync_states == model_i))):
                 next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, region)
 
@@ -243,7 +243,7 @@ def ensemble_beam_search(
             print("TOPK", model_i)
             for i, cand in enumerate(candidates[model_i]):
                 # get the token str from the cand.token using the tokenizer
-                token_str = bundle.tokenizer.decode([int(cand.token)], skip_special_tokens=False, clean_up_tokenization_spaces=False)
+                token_str = bundle.tokenizer.convert_ids_to_tokens([cand.token])[0]
                 print("->", i, cand, token_str)
 
             # topk on items where this model is behind
@@ -268,57 +268,64 @@ def ensemble_beam_search(
 
         # TODO: seed beam with the complete diagonal, and ensure each item is used only once
         q = [ BeamItemPair( candidates[0][0], 0, candidates[1][0], 0 ) ]
-        selected = []  # contains selected items
-        seen = set()
-        while len(q) > 0 and len(selected) < num_beams:
+        beam_selection = []  # contains selected items
+        beam_completed = []  # contains completed sentences
+        seen = set()  # popped items that shouldn't be appended again
+        while len(q) > 0 and len(beam_selection) < num_beams:
             pair = heapq.heappop(q)
-            seen.add((pair.cand1_rank, pair.cand2_rank))
+            seen.add((pair.cand0_rank, pair.cand1_rank))
+            cand0 = pair.cand0
             cand1 = pair.cand1
-            cand2 = pair.cand2
-            is_compat, direction = compatible(cand1, cand2)
-            cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
-            cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)
-            # print(step_i, "POP", pair.score(), pair.cand1_rank, pair.cand2_rank, cand1_str, "<>", cand2_str, is_compat)
-
+            is_compat, direction = compatible(cand0, cand1)
+            cand0_str = bundles[0].get_hyp_str(cand0.index, cand0.token)
+            cand1_str = bundles[1].get_hyp_str(cand1.index, cand1.token)
+            # print(step_i, "POP", pair.score(), pair.cand0_rank, pair.cand1_rank, cand0_str, "<>", cand1_str, is_compat)
 
             # add successor item
-            ranks = (pair.cand1_rank + 1, pair.cand2_rank + 1)
+            ranks = (pair.cand0_rank + 1, pair.cand1_rank + 1)
             if ranks[0] < len(candidates[0]) and ranks[1] < len(candidates[1]) and ranks not in seen:
-                heapq.heappush(q, BeamItemPair(candidates[0][ranks[0]], ranks[0], candidates[1][ranks[1]], ranks[1], synced=direction==0))
+                heapq.heappush(q, BeamItemPair(candidates[0][ranks[0]], ranks[0], candidates[1][ranks[1]], ranks[1], synced=direction==2))
 
             if is_compat:
-                selected.append((cand1, cand2))
+                if cand0.token == bundles[0].eos_token_id and cand1.token == bundles[1].eos_token_id:
+                    beam_completed.append((cand0, cand1))
+                else:
+                    beam_selection.append((cand0, cand1))
             else:
                 # add successors
-                ranks = (pair.cand1_rank + 1, pair.cand2_rank)
+                ranks = (pair.cand0_rank + 1, pair.cand1_rank)
                 if ranks[0] < len(candidates[0]) and ranks not in seen:
-                    extend_0 = BeamItemPair(candidates[0][ranks[0]], ranks[0], cand2, ranks[1])
+                    extend_0 = BeamItemPair(candidates[0][ranks[0]], ranks[0], cand1, ranks[1])
                     # print("EXTEND", pair.cand1_rank + 1, len(candidates[0]), extend_2)
                     heapq.heappush(q, extend_0)
 
-                ranks = (pair.cand1_rank, pair.cand2_rank + 1)
+                ranks = (pair.cand0_rank, pair.cand1_rank + 1)
                 if ranks[1] < len(candidates[1]) and ranks not in seen:
-                    extend_1 = BeamItemPair(cand1, ranks[0], candidates[1][ranks[1]], ranks[1])
+                    extend_1 = BeamItemPair(cand0, ranks[0], candidates[1][ranks[1]], ranks[1])
                     # print("EXTEND", pair.cand2_rank + 1, len(candidates[1]), extend_1)
                     heapq.heappush(q, extend_1)
 
 
+        if len(beam_completed):
+            print("DONEZO")
+            break
+
         # Now enumerate the outputs and use them to update the beams in each sub-model
-        if len(selected) < num_beams:
-            print("* FATAL: not enough candidates", len(selected), "need", num_beams)
+        if len(beam_selection) < num_beams:
+            print("* FATAL: not enough candidates", len(beam_selection), "need", num_beams)
             sys.exit(1)
 
-        selected = selected[:num_beams]
+        beam_selection = beam_selection[:num_beams]
         for i in range(num_beams):
-            cand1, cand2 = selected[i]
-            cand1_str = bundles[0].get_hyp_str(cand1.index, cand1.token)
-            cand2_str = bundles[1].get_hyp_str(cand2.index, cand2.token)            
-            print("SELECTED", i, cand1, cand1_str, cand2, cand2_str)
+            cand0, cand1 = beam_selection[i]
+            cand0_str = bundles[0].get_hyp_str(cand0.index, cand0.token)
+            cand1_str = bundles[1].get_hyp_str(cand1.index, cand1.token)            
+            print("SELECTED", i, cand0, cand0_str, cand1, cand1_str)
         
         for i, bundle in enumerate(bundles):
-            beam_tokens = [selected[j][i].token for j in range(len(selected))]
-            beam_indices = [selected[j][i].index for j in range(len(selected))]
-            beam_scores = [selected[j][i].score for j in range(len(selected))]
+            beam_tokens = [beam_selection[j][i].token for j in range(len(beam_selection))]
+            beam_indices = [beam_selection[j][i].index for j in range(len(beam_selection))]
+            beam_scores = [beam_selection[j][i].score for j in range(len(beam_selection))]
 
             print("MODEL", i, "STEP", step_i, "UPDATE", beam_tokens, beam_indices)
             bundle.update(beam_tokens, beam_indices, beam_scores)
@@ -341,8 +348,6 @@ def ensemble_beam_search(
 
             # scores should be the distribution over the next token for each beam item
             # That's a lot of data to keep track of!
-            if bundle.is_done():
-                print("MODEL", i, "IS DONE at step", step_i)
 
     for bundle in bundles:
         sequence_outputs = bundle.finalize()
