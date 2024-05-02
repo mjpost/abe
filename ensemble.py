@@ -128,35 +128,59 @@ class BeamItemPair:
     """
     def __init__(
             self,
-            cand0: BeamItem, 
-            cand0_rank: int,
-            cand1: BeamItem, 
-            cand1_rank: int,
-            synced=False):
-        self.cand0 = cand0
-        self.cand0_rank = cand0_rank
-        self.cand1 = cand1
-        self.cand1_rank = cand1_rank
-        self.synced = synced
+            beam_index,
+            token0,
+            score0,
+            token1,
+            score1,
+            sync_state=None):
+        """
+        """
+        self.beam_index = beam_index
+        self.token0 = token0
+        self.score0 = score0
+        self.token1 = token1
+        self.score1 = score1
+        self.sync_state = sync_state
 
     def score(self):
         """
         Returns the interpolated score of the pair.
         """
-        return (self.cand0.score + self.cand1.score) / 2
+        return (self.score0 + self.score1) / 2
 
     def __str__(self):
-        return f"PAIR({self.cand0}, {self.cand1})"
+        return f"PAIR({self.index} -> {self.token0}, {self.score0} / {self.token1}, {self.score1})"
 
     def __lt__(self, other):
-        return self.cand0.score < other.cand1.score
+        return self.score() < other.score()
 
 
-def get_sync_mask(self):
+class PairedTopk:
     """
-    Return a mask denoting items in the beam that are synchronized.
+    Represents a set of top-k items for each model.
     """
-    return self.synchronized
+    def __init__(self):
+        self.items = {}
+
+    def add(self, model_i, item: BeamItem):
+        """
+        Append an item to the top-k list.
+        """
+        beam_i = int(item.index)
+        if beam_i not in self.items:
+            self.items[beam_i] = [[], []]  # a list of extensions for this beam item for both models
+
+        self.items[beam_i][model_i].append(item)
+
+    def get_beams(self):
+        """
+        Return the list of beam indices.
+        """
+        return [key for key in self.items.keys() if len(self.items[key][0]) > 0 and len(self.items[key][1]) > 0]
+
+    def __getitem__(self, index):
+        return self.items[index]
 
 @torch.no_grad()
 def ensemble_beam_search(
@@ -204,47 +228,73 @@ def ensemble_beam_search(
 
         return result
     
-    # Values:
-    # 0: model 0 is ahead
-    # 1: model 1 is ahead
-    # 2: models are in sync
-    sync_states = torch.tensor([[2 for _ in range(num_beams)] for _ in range(batch_size)], dtype=torch.short, device=device)
+    # Hypotheses on beams across models are always consistent, but one may be shorter than another.
+    # 0: model 0 has a shorter surface string
+    # 1: model 1 has a shorter surface string
+    # 2: the models are in sync
+    # Calls to a model's topk() are not allowed to select from beam items where that model is ahead
+    sync_states = torch.tensor([2 for _ in range(num_beams)], dtype=torch.short, device=device)
 
     for step_i in range(1, args.max_output_tokens + 1):
 
         # TODO: add preprocessing abstraction
 
         # transform each row of output_ids into tokens and print
- 
-        candidates = [[] for _ in range(num_models)]
+
+        # A heap that will store all beam candidates, used to form the next beam.
+        # This will include single-model advances (where one model is behind and is trying to catch up)
+        # and paired-model advances (where both models advanced a compatible token).
+        beam_candidates = []
+
+        # A list of top-k items for each model from a synced state
+        paired_topk = PairedTopk()
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
-
+            other_i = 1 - model_i
             step_outputs, next_token_scores = bundle.step(step_i)
             sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
 
             # do top-k selection where the model is behind or synced
             print("STEP", step_i, "MODEL", model_i, "SYNC", sync_states, (sync_states == 2) | (sync_states == model_i))
             bundle.print_beam(model_i, step_i)
-            if torch.any(region := ((sync_states == 2) | (sync_states == model_i))):
+            if any(region := ((sync_states == 2) | (sync_states == model_i))):
                 next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, region)
+                # print("TOPK", model_i)
+                # for i, cand in enumerate(bundle_topk[model_i]):
+                #     # get the token str from the cand.token using the tokenizer
+                #     token_str = bundle.tokenizer.convert_ids_to_tokens([cand.token])[0]
+                #     print("->", i, cand, token_str)
 
                 # create a candidate out of it
                 for index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
-                    # print("ITEM", index, token, score)
-                    cand = BeamItem(index, token, score, model_no=model_i)
-                    candidates[model_i].append(cand)
+                    print("CHECKING", model_i, index, token, score, sync_states[index])
+                    # Advancing from a synced state is done by both models at once. This is handled below.
+                    if sync_states[index] == 2:
+                        cand = BeamItem(index, token, score, model_no=model_i)
+                        paired_topk.add(model_i, cand)
+
+                    elif sync_states[index] == model_i:
+                        # Unsynced items can be dealt with immediately by comparing them to their corresponding
+                        # beam item. If consistent, it can be added to the heap.
+                        beam_str = bundles[other_i].get_hyp_str(index)
+                        this_str = bundle.get_hyp_str(index, token)
+
+                        if model_i == 0:
+                            is_compat, new_sync_state = is_compatible(this_str, beam_str)
+                            if is_compat:
+                                pair = BeamItemPair(index, token, score, None, bundles[1].beam_scores[index], new_sync_state)
+                                heapq.heappush(beam_candidates, pair)
+                        elif model_i == 1:
+                            is_compat, new_sync_state = is_compatible(beam_str, this_str)
+                            if is_compat:
+                                pair = BeamItemPair(index, None, bundles[0].beam_scores[index], token, score, new_sync_state)
+                                heapq.heappush(beam_candidates, pair)
 
             # TODO: we may want to make two top-k calls per model, separating synced from non-synced rows for each model
 
             # token_str = "  ".join([f"{str(int(i))}/{bundle.tokenizer.decode(t, skip_special_tokens=False)}/{t}" for i, t in zip(next_indices[0, :], next_tokens[0, :])])
             # print("TOPK", model_i, token_str, next_token_scores)
-            print("TOPK", model_i)
-            for i, cand in enumerate(candidates[model_i]):
-                # get the token str from the cand.token using the tokenizer
-                token_str = bundle.tokenizer.convert_ids_to_tokens([cand.token])[0]
-                print("->", i, cand, token_str)
 
             # topk on items where this model is behind
             # topk = bundle.topk(outputs, self.get_behind_mask(model_i))
@@ -267,44 +317,29 @@ def ensemble_beam_search(
         # as for binarized parsing.
 
         # TODO: seed beam with the complete diagonal, and ensure each item is used only once
-        q = [ BeamItemPair( candidates[0][0], 0, candidates[1][0], 0 ) ]
         beam_selection = []  # contains selected items
         beam_completed = []  # contains completed sentences
         seen = set()  # popped items that shouldn't be appended again
-        while len(q) > 0 and len(beam_selection) < num_beams:
-            pair = heapq.heappop(q)
-            seen.add((pair.cand0_rank, pair.cand1_rank))
-            cand0 = pair.cand0
-            cand1 = pair.cand1
-            is_compat, direction = compatible(cand0, cand1)
-            cand0_str = bundles[0].get_hyp_str(cand0.index, cand0.token)
-            cand1_str = bundles[1].get_hyp_str(cand1.index, cand1.token)
+
+        # Now add all compatible items to the queue
+        # (efficiency will come later!)
+        for index in paired_topk.get_beams():
+            print("BEAM", index, "TOPK", paired_topk[index])
+            for item0 in paired_topk[index][0]:
+                for item1 in paired_topk[index][1]:
+                    cand0_str = bundles[0].get_hyp_str(index, item0.token)
+                    cand1_str = bundles[1].get_hyp_str(index, item1.token)
+                    is_compat, new_sync_state = is_compatible(cand0_str, cand1_str)
+
+                    heapq.heappush(beam_candidates, BeamItemPair(index, item0.token, item0.score, item1.token, item1.score, new_sync_state))
+
+        print("GOT", len(beam_candidates), "CANDIDATES")
+        beam_selection = beam_candidates[:num_beams]
             # print(step_i, "POP", pair.score(), pair.cand0_rank, pair.cand1_rank, cand0_str, "<>", cand1_str, is_compat)
-
-            # add successor item
-            ranks = (pair.cand0_rank + 1, pair.cand1_rank + 1)
-            if ranks[0] < len(candidates[0]) and ranks[1] < len(candidates[1]) and ranks not in seen:
-                heapq.heappush(q, BeamItemPair(candidates[0][ranks[0]], ranks[0], candidates[1][ranks[1]], ranks[1], synced=direction==2))
-
-            if is_compat:
-                if cand0.token == bundles[0].eos_token_id and cand1.token == bundles[1].eos_token_id:
-                    beam_completed.append((cand0, cand1))
-                else:
-                    beam_selection.append((cand0, cand1))
-            else:
-                # add successors
-                ranks = (pair.cand0_rank + 1, pair.cand1_rank)
-                if ranks[0] < len(candidates[0]) and ranks not in seen:
-                    extend_0 = BeamItemPair(candidates[0][ranks[0]], ranks[0], cand1, ranks[1])
-                    # print("EXTEND", pair.cand1_rank + 1, len(candidates[0]), extend_2)
-                    heapq.heappush(q, extend_0)
-
-                ranks = (pair.cand0_rank, pair.cand1_rank + 1)
-                if ranks[1] < len(candidates[1]) and ranks not in seen:
-                    extend_1 = BeamItemPair(cand0, ranks[0], candidates[1][ranks[1]], ranks[1])
-                    # print("EXTEND", pair.cand2_rank + 1, len(candidates[1]), extend_1)
-                    heapq.heappush(q, extend_1)
-
+            # if cand0.token == bundles[0].eos_token_id and cand1.token == bundles[1].eos_token_id:
+            #     beam_completed.append((cand0, cand1))
+            # else:
+            #     beam_selection.append((cand0, cand1, new_sync_states))
 
         if len(beam_completed):
             print("DONEZO")
@@ -317,18 +352,24 @@ def ensemble_beam_search(
 
         beam_selection = beam_selection[:num_beams]
         for i in range(num_beams):
-            cand0, cand1 = beam_selection[i]
+            cand0, cand1, new_sync_states = beam_selection[i]
             cand0_str = bundles[0].get_hyp_str(cand0.index, cand0.token)
-            cand1_str = bundles[1].get_hyp_str(cand1.index, cand1.token)            
-            print("SELECTED", i, cand0, cand0_str, cand1, cand1_str)
+            cand1_str = bundles[1].get_hyp_str(cand1.index, cand1.token)
+            dir_str = "SAME" if new_sync_states == 2 else "DIFF"
+            print("SELECTED", i, dir_str, cand0, cand0_str, cand1, cand1_str)
         
+        # Now, go through and update each model with its selection.
+        # There is a constraint on updating: a model can only update beam items
+        # where the sync state is 2 (both models were already in sync) or where
+        # the sync state is the model number (that model was behind).
         for i, bundle in enumerate(bundles):
             beam_tokens = [beam_selection[j][i].token for j in range(len(beam_selection))]
             beam_indices = [beam_selection[j][i].index for j in range(len(beam_selection))]
             beam_scores = [beam_selection[j][i].score for j in range(len(beam_selection))]
+            filter = [sync_states[i] ]
 
             print("MODEL", i, "STEP", step_i, "UPDATE", beam_tokens, beam_indices)
-            bundle.update(beam_tokens, beam_indices, beam_scores)
+            bundle.update(beam_tokens, beam_indices, beam_scores, sync_states)
 
             # next_token_scores = torch.tensor([selected[j][1].score for j in range(len(selected))], dtype=torch.float, device=device).unsqueeze(0)
             # next_tokens = torch.tensor([selected[j][i].token for j in range(len(selected))], dtype=torch.long, device=device).unsqueeze(0)
@@ -368,6 +409,21 @@ def ensemble_beam_search(
 
     return sequence_outputs["sequences"]
 
+def is_compatible(cand0_str, cand1_str):
+    if cand0_str == cand1_str:
+        is_compat = True
+        new_sync_state = 2
+    elif cand0_str.startswith(cand1_str):
+        is_compat = True
+        new_sync_state = 1
+    elif cand1_str.startswith(cand0_str):
+        is_compat = True
+        new_sync_state = 0
+    else:
+        is_compat = False
+        new_sync_state = None
+
+    return is_compat, new_sync_state
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
     def __init__(self, noise):
