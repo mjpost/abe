@@ -212,16 +212,17 @@ class Bundle:
 
         return encoder_input_ids, self.encoder_outputs
     
-    def step(self, step_no=None):
+    def step(self, step_no=None, sequential=True):
         """
         Takes a step in the generation loop after preparing the inputs.
         """
 
         step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
+        # print("STEP INPUTS")
+        # for key in step_inputs.keys():
+        #     print("->", key, type(step_inputs[key]))
 
-        # print("STEP", step_no, step_inputs)
-
-        sequential = True
+        # For 
         if sequential:
             inputs_per_sub_batches = _split_model_inputs(
                 step_inputs, split_size=self.batch_size, full_batch_size=self.batch_beam_size
@@ -255,9 +256,17 @@ class Bundle:
 
         return step_outputs, next_token_scores
 
-    def get_surface_str(self, beam_index, token_id):
-        sequence = torch.cat([self.output_ids[beam_index], torch.tensor([token_id])], dim=-1)
+    def get_surface_str(self, beam_index, token_id=None):
+        """
+        Returns the surface string of the specified beam index, optionally with the specified token appended.
+        """
+        sequence = self.output_ids[beam_index]
+        if token_id is not None:
+            sequence = torch.cat([sequence, torch.tensor([token_id])], dim=-1)
         return self.tokenizer.decode(sequence, skip_special_tokens=True)
+
+    def id_to_token(self, token_id):
+        return self.tokenizer.convert_ids_to_tokens([token_id])[0]
 
     def print_beam(self, model_i=None, step=None):
         if model_i is not None:
@@ -270,7 +279,7 @@ class Bundle:
             print(i, f"len={len(tokens)}", self.beam_scores.view(self.batch_size, self.num_beams)[0][i], " ".join(tokens), self.output_ids[i])
         print()
 
-    def topk(self, sequence_scores, region=None, multiplier=2):
+    def topk(self, sequence_scores, region=None, multiplier=3):
         """
         Select the top k items, ignoring any masked items.
         If set, `region` is used to limit the top-k selection to the specified rows of the beam.
@@ -330,7 +339,7 @@ class Bundle:
 
         return beam_scores, beam_next_tokens, beam_idx
 
-    def update(self, beam_next_tokens, beam_idx, beam_scores, step_outputs=None):
+    def update(self, beam_idx, beam_next_tokens, beam_scores, step_outputs=None):
         """
         Updates the model's beam sequences by extended the specified beam indices with the selected tokens.
         If {step_outputs} is defined, it will update the cache, as well.
@@ -349,6 +358,8 @@ class Bundle:
 
         # update the beam scores
         self.beam_scores = beam_scores
+
+        print("UPDATE", beam_idx, beam_next_tokens, beam_scores)
 
         # extend the sequence of generated output tokens
         self.output_ids = torch.cat([self.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)

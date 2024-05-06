@@ -1,6 +1,12 @@
 The code for ensembling is brewing in `ensemble.py`.
 I (MJP) have copied stub code there which we simply need to extend.
 
+## Test
+
+    echo "This is test." | ./translate.py
+    - m2m100 -> C'est un test.
+    - nllb-200-distilled-600M -> Il s'agit d'un test.
+
 ## Setup
 
 Installation:
@@ -80,4 +86,8 @@ model name -> params(
 
               X    X      position mask
 
-1    1    1   0    0      attention mask              
+1    1    1   0    0      attention mask             
+
+## Notes
+
+Huggingface beam search pops items off the beam when they are finished, and continues generating using normal beam search, until there are enough complete items. Another strategy would be to keep those items in the beam and ignore them.

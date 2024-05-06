@@ -38,6 +38,7 @@ def translate(
         model: Bundle,
         num_beams: Optional[int] = 5,
         max_length: Optional[int] = 256,
+        sequential: bool = False,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
         r"""
         Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
@@ -59,7 +60,7 @@ def translate(
             step_i += 1
 
             # TODO: add preprocessing abstraction
-            step_outputs, next_token_scores = model.step(step_i)
+            step_outputs, next_token_scores = model.step(step_i, sequential=sequential)
 
             # Test adding random zeroes throughout
             # if cur_len % 2 == 0 and cur_len < 12:
@@ -80,7 +81,7 @@ def translate(
 
             beam_scores, beam_next_tokens, beam_idx = model.beam_select(next_token_scores, next_tokens, next_indices)
 
-            model.update(beam_next_tokens, beam_idx, beam_scores, step_outputs)
+            model.update(beam_idx, beam_next_tokens, beam_scores, step_outputs)
 
 
             # test adding in random zeros, by replacing either the penultimate or last item in each
@@ -126,22 +127,23 @@ def main(args):
         line = line.rstrip()
 
         # normally you would now call beam search, but we need to implement it
-        outputs = translate(line, model, num_beams=args.num_beams, max_length=args.max_output_tokens)
+        outputs = translate(line, model, num_beams=args.num_beams, max_length=args.max_output_tokens, sequential=args.sequential)
 
         # decode with the combined vocabulary
         result = model.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
-        print(result)
+        print("RESULT", result)
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", "-m", type=str, default="facebook/m2m100_418M", help="Model name")
-    parser.add_argument("--target-lang", "-t", type=str, default="fra_Latn", help="Target language")
+    parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=5, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
     parser.add_argument("--max-output-tokens", "-l", type=int, default=256, help="Maximum number of output tokens")
+    parser.add_argument("--sequential", action="store_true", help="Use sequential beam search")
     args = parser.parse_args()
 
     main(args)
