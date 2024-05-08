@@ -309,7 +309,7 @@ def ensemble_beam_search(
                 for beam_index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
                     beam_index = int(beam_index)
 
-                    print("ITEM model", model_i, "beam", int(beam_index), token, score, bundle.id_to_token(token))
+                    # print("ITEM model", model_i, "beam", int(beam_index), token, score, bundle.id_to_token(token))
                     # Advancing from a synced state is done by both models at once. This is handled below.
                     if sync_states[beam_index] == 2:
 
@@ -381,7 +381,7 @@ def ensemble_beam_search(
 
         # Now handle paired items, e.g., beam steps taken from synced states
         for beam_index in sorted(paired_topk.keys()):
-            print("BEAM", beam_index, "ITEMS", len(paired_topk[beam_index][0]), "x", len(paired_topk[beam_index][1]))
+            # print("BEAM", beam_index, "ITEMS", len(paired_topk[beam_index][0]), "x", len(paired_topk[beam_index][1]))
             for item0 in paired_topk[beam_index][0]:
                 for item1 in paired_topk[beam_index][1]:
                     # check if the pair is compatible and if so, add it to the beam_candidates queue
@@ -541,9 +541,10 @@ def is_compatible(cand0_str, cand1_str):
         is_compat = False
         new_sync_state = None
 
-    print("-> IS_COMPAT", cand0_str, "<>", cand1_str, is_compat, new_sync_state)
+    # print("-> IS_COMPAT", cand0_str, "<>", cand1_str, is_compat, new_sync_state)
 
     return is_compat, new_sync_state
+
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
     def __init__(self, noise):

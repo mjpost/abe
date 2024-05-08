@@ -200,7 +200,7 @@ class Bundle:
             forced_tokens = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.bos_force_token
             self.output_ids = torch.cat([self.output_ids, forced_tokens], dim=-1)
 
-            self.step()
+            self.step(sequential=False)
             # step_outputs = self.model.step()
             # next_token_logits = step_outputs.logits[:, -1, :]
             # print("* OUTPUTS.LOGITS", next_token_logits.shape)
@@ -217,29 +217,34 @@ class Bundle:
         Takes a step in the generation loop after preparing the inputs.
         """
 
-        step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
         # print("STEP INPUTS")
         # for key in step_inputs.keys():
         #     print("->", key, type(step_inputs[key]))
 
-        # For 
+
         if sequential:
-            inputs_per_sub_batches = _split_model_inputs(
-                step_inputs, split_size=self.batch_size, full_batch_size=self.batch_beam_size
+            # TODO: split one-by-one
+            # step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
+            split_kwargs = _split_model_inputs(
+                self.model_kwargs, split_size=self.batch_size, full_batch_size=self.batch_beam_size
             )
-            outputs_per_sub_batch = [
-                self.model(
-                    **inputs_per_sub_batch,
+            outputs_per_sub_batch = []
+            for output_ids, this_kwargs in zip(self.output_ids[:], split_kwargs):
+                output_ids = output_ids[output_ids != self.pad_token_id].unsqueeze(0)
+                print("OUTPUT_IDS", output_ids.shape, output_ids, this_kwargs.keys())
+                step_inputs = self.model.prepare_inputs_for_generation(output_ids, **this_kwargs)
+                step_outputs = self.model(
+                    **step_inputs,
                     return_dict=True,
                     output_attentions=True,
                     output_hidden_states=True,
                 )
-                for inputs_per_sub_batch in inputs_per_sub_batches
-            ]
+                outputs_per_sub_batch.append(step_outputs)
 
             step_outputs = stack_model_outputs(outputs_per_sub_batch)        
 
         else:
+            step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
             step_outputs = self.model(
                 **step_inputs,
                 return_dict=True,
