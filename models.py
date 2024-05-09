@@ -212,7 +212,7 @@ class Bundle:
 
         return encoder_input_ids, self.encoder_outputs
     
-    def step(self, step_no=None, sequential=True):
+    def step(self, step_no=None, sequential=False):
         """
         Takes a step in the generation loop after preparing the inputs.
         """
@@ -269,7 +269,7 @@ class Bundle:
 
         # Massage the logits. This is how prefix decoding is enforced.
         next_token_logits_processed = self.logits_processor(self.output_ids, next_token_logits)
-        next_token_scores = torch.nn.functional.softmax(
+        next_token_scores = torch.nn.functional.log_softmax(
             next_token_logits_processed, dim=-1
         )  # (batch_size * num_beams, vocab_size)
 
@@ -287,6 +287,8 @@ class Bundle:
     def id_to_token(self, token_id):
         return self.tokenizer.convert_ids_to_tokens([token_id])[0]
 
+    
+
     def print_beam(self, model_i=None, step=None):
         if model_i is not None:
             print(f"BEAM {step} MODEL {model_i}")
@@ -295,7 +297,8 @@ class Bundle:
         for i in range(self.output_ids.shape[0]):
             tokens = self.tokenizer.convert_ids_to_tokens(self.output_ids[i].tolist())
                 # print(i, output_ids[i].tolist())
-            print(i, f"len={len(tokens)}", self.beam_scores.view(self.batch_size, self.num_beams)[0][i], " ".join(tokens), self.output_ids[i])
+            token_str = self.tokenizer.decode(self.output_ids[i], skip_special_tokens=True)
+            print(i, f"len={len(tokens)}", self.beam_scores.view(self.batch_size, self.num_beams)[0][i], " ".join(tokens), self.output_ids[i], token_str)
         print()
 
     def topk(self, sequence_scores, region=None, multiplier=3):
@@ -329,7 +332,8 @@ class Bundle:
         next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
         next_tokens = next_tokens % vocab_size
 
-        print("TOPK", next_tokens.shape, next_indices, next_tokens)
+        token_str = " ".join([f"{i}/{t}/{self.id_to_token(t)}" for i, t in zip(next_indices[0].tolist(), next_tokens[0].tolist())])
+        print("TOPK", next_tokens.shape, token_str)
 
         return next_indices, next_tokens, sequence_scores
 
@@ -392,14 +396,21 @@ class Bundle:
                     self.model_kwargs["past_key_values"], beam_idx
                 )
 
-    def is_done(self, token_id):
-        return 
-
     def beam_is_done(self):
+        """
+        Returns true if the beam is complete.
+        """
         beam_scorer_done = self.beam_scorer.is_done
         stopping_criteria_done = self.stopping_criteria(self.output_ids, self.beam_scores)
         print("IS_DONE", "beam=", beam_scorer_done, "stop=", stopping_criteria_done)
         return beam_scorer_done or stopping_criteria_done
+
+    def beam_item_is_done(self, beam_index):
+        """
+        Returns true if the last item in a beam index is the EOS token.
+        Function is pad_token_id aware.
+        """
+        return self.output_ids[beam_index][self.output_ids[beam_index] != self.pad_token_id][-1] in self.eos_token_id
 
     def finalize(self):
         return self.beam_scorer.finalize(

@@ -7,6 +7,13 @@ I (MJP) have copied stub code there which we simply need to extend.
     - m2m100 -> C'est un test.
     - nllb-200-distilled-600M -> Il s'agit d'un test.
 
+
+
+    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/nllb-200-distilled-600M --num-beams 5 -l 10
+    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/m2m100_1.2B --num-beams 5 -l 10
+
+
+
 ## Setup
 
 Installation:
@@ -72,11 +79,6 @@ model name -> params(
 - "facebook/nllb-moe-54b": 256204 tokens 
 
 ## Usage
-
-    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/nllb-200-distilled-600M --num-beams 5 -l 10
-    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/m2m100_1.2B --num-beams 5 -l 10
-
-
 
 
 

@@ -60,7 +60,6 @@ class EnsembleBeam:
 
                 # Step
                 step_outputs = model.step(model_inputs)
-                next_token_logits = step_outputs.logits[:, -1, :]
                 # print("* OUTPUTS.LOGITS", next_token_logits.shape)
 
                 forced_tokens = torch.ones((num_beams, 1), device=device, dtype=torch.long) * model.bos_force_token
@@ -69,36 +68,6 @@ class EnsembleBeam:
                 # Initialize models, including running over force BOS tokens
             # These store individual models' tokenized outputs
             self.model_output_ids.append(model_output_ids)
-
-    def step(self):
-        """
-        Take a step of the ensembled model and fill a new beam. There are two kinds of steps, 
-        corresponding to the state of each beam item:
-        - **Sychronized**. In this case, all models exactly agree on the output.
-          Each model takes a step, and the outputs are compared and merged.
-        - **Unsynchronized**. In this case, the models have consistent outputs, but might
-          have generated different lengths. In this case, only the models that are behind are
-          allowed to take a step. From its output, we choose only items that are consistent
-          with the already-generated string.
-        """
-        # SYNCHRONIZED STEP
-        # For every model, take a step from its current states.
-        # Then filter its rows to only include those that are synchronized.
-        # Apply top-k selection to select the top-k candidate items for that model
-
-        for model, output_ids in zip(self.models, self.model_output_ids):
-            model_inputs = model.prepare_inputs_for_generation(output_ids)
-
-            step_outputs = model.step(model_inputs)
-
-            # Step
-            step_outputs = model.step(model_inputs)
-            next_token_logits = step_outputs.logits[:, -1, :]
-            # Massage the logits. This is how prefix decoding is enforced.
-            next_token_logits = model.logits_processor(model_output_ids, next_token_logits)
-            next_token_scores = nn.functional.softmax(
-                next_token_logits, dim=-1
-            )
 
 
 class BeamItem:
@@ -114,8 +83,8 @@ class BeamItem:
     def __str__(self):
         return f"ITEM({self.index}, {self.token}, {self.score} #{self.model_no})"
 
-    def __lt__(self, other):
-        return self.score < other.score
+    # def __lt__(self, other):
+    #     return self.score < other.score
 
 
 class BeamItemPair:
@@ -179,7 +148,7 @@ class BeamItemPair:
         return f"PAIR({ensemble_score:.3f} SYNC{self.sync_state} {self.beam_index} -> {self.token0} ({self.score0:.3f}) / {self.token1} ({self.score1:.3f}))"
 
     def __lt__(self, other):
-        return self.score() < other.score()
+        return self.score() > other.score()
 
 
 # class PairedTopk:
@@ -269,6 +238,8 @@ def ensemble_beam_search(
     # Calls to a model's topk() are not allowed to select from beam items where that model is ahead
     sync_states = torch.tensor([2 for _ in range(num_beams)], dtype=torch.short, device=device)
 
+    beam_completed = []  # contains completed sentences
+
     """
     # Models: 0 (TM) and 1 (LLM)
     BEAM 0: [Life is like a box of], [Life is like a box of]    # -> sync state 2
@@ -312,10 +283,9 @@ def ensemble_beam_search(
                     # print("ITEM model", model_i, "beam", int(beam_index), token, score, bundle.id_to_token(token))
                     # Advancing from a synced state is done by both models at once. This is handled below.
                     if sync_states[beam_index] == 2:
-
                         paired_topk[beam_index][model_i].append(BeamItem(model_i, beam_index, token, score))
 
-                    elif sync_states[beam_index] == model_i:
+                    elif sync_states[beam_index] == model_i and token != bundle.eos_token_id:
                         # Unsynced items can be dealt with immediately by comparing them to their corresponding
                         # beam item. If consistent, it can be added to the heap.
                         beam_str = bundles[other_i].get_surface_str(beam_index)  # e.g., "Life is like a box"
@@ -323,18 +293,18 @@ def ensemble_beam_search(
 
                         # Unfortunately we need to handle the models separately to get the arguments right
                         if model_i == 0:
-                            is_compat, new_sync_state = is_compatible(this_str, beam_str)
+                            is_compat, new_sync_state = is_compatible(this_str, beam_str, bundle.beam_item_is_done(beam_index), bundles[1].beam_item_is_done(beam_index))
                             if is_compat:
                                 pair = BeamItemPair(
                                     BeamItem(model_i, beam_index, token, score), 
-                                    BeamItem(other_i, beam_index, None, bundles[1].beam_scores[beam_index]), 
+                                    BeamItem(other_i, beam_index, bundles[1].pad_token_id, bundles[1].beam_scores[beam_index]), 
                                     new_sync_state)
                                 heapq.heappush(beam_candidates, pair)
                         elif model_i == 1:
-                            is_compat, new_sync_state = is_compatible(beam_str, this_str)
+                            is_compat, new_sync_state = is_compatible(beam_str, this_str, bundles[0].beam_item_is_done(beam_index), bundle.beam_item_is_done(beam_index))
                             if is_compat:
                                 pair = BeamItemPair(
-                                    BeamItem(other_i, beam_index, None, bundles[0].beam_scores[beam_index]), 
+                                    BeamItem(other_i, beam_index, bundles[0].pad_token_id, bundles[0].beam_scores[beam_index]), 
                                     BeamItem(model_i, beam_index, token, score), 
                                     new_sync_state)
                                 heapq.heappush(beam_candidates, pair)
@@ -382,19 +352,29 @@ def ensemble_beam_search(
         # Now handle paired items, e.g., beam steps taken from synced states
         for beam_index in sorted(paired_topk.keys()):
             # print("BEAM", beam_index, "ITEMS", len(paired_topk[beam_index][0]), "x", len(paired_topk[beam_index][1]))
-            for item0 in paired_topk[beam_index][0]:
-                for item1 in paired_topk[beam_index][1]:
+            used_j = set()
+            for i, item0 in enumerate(  paired_topk[beam_index][0]):
+                for j, item1 in enumerate(paired_topk[beam_index][1]):
+                    if j in used_j:
+                        continue
+
+                    # for synced states, both hyps have to finish together
+                    if (item0.token in bundles[0].eos_token_id) != (item1.token in bundles[1].eos_token_id):
+                        continue
+
                     # check if the pair is compatible and if so, add it to the beam_candidates queue
                     cand0_str = bundles[0].get_surface_str(beam_index, item0.token)
                     cand1_str = bundles[1].get_surface_str(beam_index, item1.token)
-                    is_compat, new_sync_state = is_compatible(cand0_str, cand1_str)
+                    is_compat, new_sync_state = is_compatible(cand0_str, cand1_str, bundles[0].beam_item_is_done(beam_index), bundles[1].beam_item_is_done(beam_index))
 
                     if is_compat:
+                        used_j.add(j)
                         heapq.heappush(beam_candidates, BeamItemPair(
                             BeamItem(0, beam_index, item0.token, item0.score), 
                             BeamItem(1, beam_index, item1.token, item1.score), 
                             new_sync_state)
                         )
+                        break
 
         # TODO: there might be no overlap in topk
         # solution: repeat, with 2x k
@@ -409,7 +389,6 @@ def ensemble_beam_search(
         # is needed (which might fail again, e.g., for a really out-of-domain name).
 
         # TODO: seed beam with the complete diagonal, and ensure each item is used only once
-        beam_completed = []  # contains completed sentences
 
         # Take the top k as the next beam
         print("GOT", len(beam_candidates), "CANDIDATES")
@@ -417,7 +396,14 @@ def ensemble_beam_search(
         # TODO: make sure we have enough candidates to fill the beam
 
         # The next beam
-        beam_selection = [ heapq.heappop(beam_candidates) for _ in range(num_beams) ]
+        beam_selection = []
+        while len(beam_selection) < num_beams and len(beam_candidates):
+            cand = heapq.heappop(beam_candidates)
+
+            if bundles[0].beam_item_is_done(cand.cand0.index) and bundles[1].beam_item_is_done(cand.cand1.index):
+                beam_completed.append(cand)
+            else:
+                beam_selection.append(cand)
 
         """
         TODO:
@@ -452,6 +438,7 @@ def ensemble_beam_search(
             # else:
             #     beam_selection.append((cand0, cand1, new_sync_states))
 
+        # PICKUP figuring out when you're done
         if len(beam_completed):
             print("DONE")
             break
@@ -465,7 +452,7 @@ def ensemble_beam_search(
             cand0, cand1, new_sync_states = beam_selection[i].cand0, beam_selection[i].cand1, beam_selection[i].sync_state
             cand0_str = bundles[0].get_surface_str(cand0.index, cand0.token)
             cand1_str = bundles[1].get_surface_str(cand1.index, cand1.token)
-            print("SELECTED", i, beam_selection[i], cand0_str, cand1_str)
+            print("SELECTED", i, beam_selection[i], cand0_str, "|||", cand1_str)
         
         # Now, go through and update each model with its selection.
         # There is a constraint on updating: a model can only update beam items
@@ -521,13 +508,20 @@ def ensemble_beam_search(
 
     return sequence_outputs["sequences"]
 
-def is_compatible(cand0_str, cand1_str):
+def is_compatible(cand0_str, cand1_str, cand0_done, cand1_done):
     """
     Determines whether two strings are compatible.
     If so, the sync state is set to mark the string relationship.
 
     :return: A tuple of (is_compatible, new_sync_state)
     """
+    if cand0_done and cand1_done:
+        return True, 2
+    elif cand0_done:
+        return True, 1
+    elif cand1_done:
+        return True, 0
+
     if cand0_str == cand1_str:
         is_compat = True
         new_sync_state = 2
