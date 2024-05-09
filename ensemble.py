@@ -293,7 +293,7 @@ def ensemble_beam_search(
 
                         # Unfortunately we need to handle the models separately to get the arguments right
                         if model_i == 0:
-                            is_compat, new_sync_state = is_compatible(this_str, beam_str, bundle.beam_item_is_done(beam_index), bundles[1].beam_item_is_done(beam_index))
+                            is_compat, new_sync_state = is_compatible(this_str, beam_str)
                             if is_compat:
                                 pair = BeamItemPair(
                                     BeamItem(model_i, beam_index, token, score), 
@@ -301,7 +301,7 @@ def ensemble_beam_search(
                                     new_sync_state)
                                 heapq.heappush(beam_candidates, pair)
                         elif model_i == 1:
-                            is_compat, new_sync_state = is_compatible(beam_str, this_str, bundles[0].beam_item_is_done(beam_index), bundle.beam_item_is_done(beam_index))
+                            is_compat, new_sync_state = is_compatible(beam_str, this_str)
                             if is_compat:
                                 pair = BeamItemPair(
                                     BeamItem(other_i, beam_index, bundles[0].pad_token_id, bundles[0].beam_scores[beam_index]), 
@@ -365,7 +365,7 @@ def ensemble_beam_search(
                     # check if the pair is compatible and if so, add it to the beam_candidates queue
                     cand0_str = bundles[0].get_surface_str(beam_index, item0.token)
                     cand1_str = bundles[1].get_surface_str(beam_index, item1.token)
-                    is_compat, new_sync_state = is_compatible(cand0_str, cand1_str, bundles[0].beam_item_is_done(beam_index), bundles[1].beam_item_is_done(beam_index))
+                    is_compat, new_sync_state = is_compatible(cand0_str, cand1_str)
 
                     if is_compat:
                         used_j.add(j)
@@ -508,20 +508,13 @@ def ensemble_beam_search(
 
     return sequence_outputs["sequences"]
 
-def is_compatible(cand0_str, cand1_str, cand0_done, cand1_done):
+def is_compatible(cand0_str, cand1_str):
     """
     Determines whether two strings are compatible.
     If so, the sync state is set to mark the string relationship.
 
     :return: A tuple of (is_compatible, new_sync_state)
     """
-    if cand0_done and cand1_done:
-        return True, 2
-    elif cand0_done:
-        return True, 1
-    elif cand1_done:
-        return True, 0
-
     if cand0_str == cand1_str:
         is_compat = True
         new_sync_state = 2
