@@ -221,8 +221,10 @@ class Bundle:
         # for key in step_inputs.keys():
         #     print("->", key, type(step_inputs[key]))
 
-
         if sequential:
+            # some inputs have pad ids and will need to be re-padded after taking the step
+            output_len = self.output_ids.shape[1]
+
             # TODO: split one-by-one
             # step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
             split_kwargs = _split_model_inputs(
@@ -239,14 +241,26 @@ class Bundle:
                     output_attentions=True,
                     output_hidden_states=True,
                 )
+
+                # adjust lengths
                 outputs_per_sub_batch.append(step_outputs)
+                print("STEP_OUTPUTS", output_len)
+                for key, value in step_outputs.items():
+                    if type(value) is torch.Tensor:
+                        print("->", key, value.shape)
+                    else:
+                        print("->", key, len(value))
 
             step_outputs = stack_model_outputs(outputs_per_sub_batch)        
 
         else:
+            # 0 is masked, 1 is not masked
             step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
+            # print("STEP INPUTS", step_inputs.keys())
+            attention_mask = (self.output_ids != self.pad_token_id).int().to(self.device)
             step_outputs = self.model(
                 **step_inputs,
+                decoder_attention_mask=attention_mask,
                 return_dict=True,
             )
 
