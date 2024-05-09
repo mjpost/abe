@@ -96,9 +96,9 @@ class Bundle:
         # )
 
         self.pad_token_id = self.tokenizer.pad_token_id
-        self.eos_token_id = self.tokenizer.eos_token_id
-        if isinstance(self.eos_token_id, int):
-            self.eos_token_id = [self.eos_token_id]
+        self.eos_token_ids = self.tokenizer.eos_token_id
+        if isinstance(self.eos_token_ids, int):
+            self.eos_token_ids = [self.eos_token_ids]
         self.bos_force_token = bos_force_token
 
         # TODO: use config.is_encoder_decoder
@@ -322,7 +322,7 @@ class Bundle:
         # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
         # MJP: In the worst case, we'd select all EOS tokens. To avoid that, we ensure that k is set such
         # that we have at least 1 non-EOS token per beam.
-        n_eos_tokens = len(self.eos_token_id) if self.eos_token_id else 0
+        n_eos_tokens = len(self.eos_token_ids) if self.eos_token_ids else 0
         num_wanted = k * max(multiplier, 1 + n_eos_tokens)
         sequence_scores, next_tokens = torch.topk(
             sequence_scores, num_wanted, dim=1, largest=True, sorted=True
@@ -351,7 +351,7 @@ class Bundle:
             next_tokens,
             next_indices,
             pad_token_id=self.pad_token_id,
-            eos_token_id=self.eos_token_id,
+            eos_token_id=self.eos_token_ids,
             beam_indices=self.beam_indices,
             decoder_prompt_len=self.decoder_prompt_len,
         )
@@ -396,6 +396,9 @@ class Bundle:
                     self.model_kwargs["past_key_values"], beam_idx
                 )
 
+    def is_eos(self, token):
+        return int(token) in self.eos_token_ids
+
     def beam_is_done(self):
         """
         Returns true if the beam is complete.
@@ -410,7 +413,7 @@ class Bundle:
         Returns true if the last item in a beam index is the EOS token.
         Function is pad_token_id aware.
         """
-        return self.output_ids[beam_index][self.output_ids[beam_index] != self.pad_token_id][-1] in self.eos_token_id
+        return self.output_ids[beam_index][self.output_ids[beam_index] != self.pad_token_id][-1] in self.eos_token_ids
 
     def finalize(self):
         return self.beam_scorer.finalize(
@@ -419,7 +422,7 @@ class Bundle:
             None,
             None,
             pad_token_id=self.pad_token_id,
-            eos_token_id=self.eos_token_id,
+            eos_token_id=self.eos_token_ids,
             max_length=self.stopping_criteria.max_length,
             beam_indices=self.beam_indices,
             decoder_prompt_len=self.decoder_prompt_len,

@@ -285,7 +285,7 @@ def ensemble_beam_search(
                     if sync_states[beam_index] == 2:
                         paired_topk[beam_index][model_i].append(BeamItem(model_i, beam_index, token, score))
 
-                    elif sync_states[beam_index] == model_i and token != bundle.eos_token_id:
+                    elif sync_states[beam_index] == model_i and token != bundle.eos_token_ids:
                         # Unsynced items can be dealt with immediately by comparing them to their corresponding
                         # beam item. If consistent, it can be added to the heap.
                         beam_str = bundles[other_i].get_surface_str(beam_index)  # e.g., "Life is like a box"
@@ -359,7 +359,7 @@ def ensemble_beam_search(
                         continue
 
                     # for synced states, both hyps have to finish together
-                    if (item0.token in bundles[0].eos_token_id) != (item1.token in bundles[1].eos_token_id):
+                    if bundles[0].is_eos(item0.token) != bundles[1].is_eos(item1.token):
                         continue
 
                     # check if the pair is compatible and if so, add it to the beam_candidates queue
@@ -399,9 +399,11 @@ def ensemble_beam_search(
         beam_selection = []
         while len(beam_selection) < num_beams and len(beam_candidates):
             cand = heapq.heappop(beam_candidates)
-
-            if bundles[0].beam_item_is_done(cand.cand0.index) and bundles[1].beam_item_is_done(cand.cand1.index):
-                beam_completed.append(cand)
+            print("STEP", step_i, "CAND", cand, cand.cand0.token, bundles[0].eos_token_ids, cand.cand1.token, bundles[1].eos_token_ids)
+            if bundles[0].is_eos(cand.cand0.token) and bundles[1].is_eos(cand.cand1.token):
+                print(step_i, "COMPLETE", cand)
+                beam_completed.append((bundles[0].output_ids[cand.cand0.index], bundles[0].beam_scores[cand.cand0.index], 
+                                       bundles[1].output_ids[cand.cand1.index], bundles[1].beam_scores[cand.cand1.index], cand))
             else:
                 beam_selection.append(cand)
 
@@ -438,15 +440,18 @@ def ensemble_beam_search(
             # else:
             #     beam_selection.append((cand0, cand1, new_sync_states))
 
-        # PICKUP figuring out when you're done
-        if len(beam_completed):
-            print("DONE")
-            break
-
         # Now enumerate the outputs and use them to update the beams in each sub-model
         if len(beam_selection) < num_beams:
-            print("* FATAL: not enough candidates", len(beam_selection), "need", num_beams)
-            sys.exit(1)
+            print("* WARNING: not enough candidates", len(beam_selection), "need", num_beams)
+
+            if len(beam_completed) > 0:
+                break
+
+        # PICKUP figuring out when you're done
+        print("I COUNT", len(beam_completed), "COMPLETED")
+        if len(beam_completed) == num_beams:
+            print("DONE")
+            break
 
         for i in range(num_beams):
             cand0, cand1, new_sync_states = beam_selection[i].cand0, beam_selection[i].cand1, beam_selection[i].sync_state
@@ -489,8 +494,15 @@ def ensemble_beam_search(
         # update sync states
         sync_states = torch.tensor([beam_selection[j].sync_state for j in range(len(beam_selection))], dtype=torch.short, device=device)
 
-    for bundle in bundles:
-        sequence_outputs = bundle.finalize()
+    for i, completed in enumerate(beam_completed):
+        model0_ids, model0_score, model1_ids, model1_score, pair = completed
+        model0_str = bundles[0].tokenizer.decode(model0_ids, skip_special_tokens=True)
+        print(f"COMPLETED {i}:", model0_str, model0_score, model1_score, pair)
+
+    return model0_str, pair.score()
+
+    # for bundle in bundles:
+    #     sequence_outputs = bundle.finalize()
     # for i, bundle in enumerate(bundles):
     #     sequence_outputs.append(
     #         beam_scorer.finalize(
@@ -506,7 +518,7 @@ def ensemble_beam_search(
     #         )
     #     )
 
-    return sequence_outputs["sequences"]
+    # return sequence_outputs["sequences"]
 
 def is_compatible(cand0_str, cand1_str):
     """
@@ -559,11 +571,11 @@ def main(args):
 
         # normally you would now call beam search, but we need to implement it
         outputs = ensemble_beam_search(line, models, num_beams=args.num_beams, max_length=args.max_output_tokens)
+        print(outputs[0], outputs[1])
 
         # decode with the combined vocabulary
-        result = models[0].tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-
-        print(result)
+        # result = models[0].tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+        # print(result)
 
 
 if __name__ == "__main__":
