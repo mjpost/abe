@@ -20,7 +20,7 @@ from transformers.generation.utils import (
     GenerateBeamDecoderOnlyOutput, 
     GenerateBeamEncoderDecoderOutput,
 )
-from models import get_model_bundle, Bundle
+from ensembling.models import get_model_bundle, Bundle
 
 __version__ = "0.1.0"
 
@@ -246,7 +246,8 @@ def ensemble_beam_search(
     BEAM 1: [Life is like a container], [Life is like a cont]   # -> sync state 1 (model 1 is shorter)
     BEAM 2: [Life is similar to a], [Life is similar to a box]  # -> sync state 0 (model 0 is shorter)
     """
-    for step_i in range(1, args.max_output_tokens + 1):
+    # for step_i in range(1, args.max_output_tokens + 1):
+    for step_i in range(1, max_length + 1):
 
         # TODO: add preprocessing abstraction
 
@@ -494,12 +495,17 @@ def ensemble_beam_search(
         # update sync states
         sync_states = torch.tensor([beam_selection[j].sync_state for j in range(len(beam_selection))], dtype=torch.short, device=device)
 
+    sorted_completions = sorted(beam_completed, key=lambda x: x[4].score(), reverse=True)
+
     for i, completed in enumerate(beam_completed):
         model0_ids, model0_score, model1_ids, model1_score, pair = completed
         model0_str = bundles[0].tokenizer.decode(model0_ids, skip_special_tokens=True)
         print(f"COMPLETED {i}:", model0_str, model0_score, model1_score, pair)
 
-    return model0_str, pair.score()
+    # return model0_str, pair.score()
+    best_beam = sorted_completions[0]
+    output_str = bundles[0].tokenizer.decode(best_beam[0], skip_special_tokens=True)
+    return output_str, best_beam[4].score()
 
     # for bundle in bundles:
     #     sequence_outputs = bundle.finalize()

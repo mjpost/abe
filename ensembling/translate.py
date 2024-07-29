@@ -29,7 +29,7 @@ from transformers.generation.utils import (
 )
 from transformers.generation.stopping_criteria import MaxLengthCriteria
 
-from models import get_model_bundle, Bundle
+from ensembling.models import get_model_bundle, Bundle
 
 
 @torch.no_grad()

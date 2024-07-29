@@ -3,7 +3,7 @@ from typing import List
 
 import sys
 import numpy as np
-from models import Model
+from ensembling.models import Model
 
 class SharedVocab:
     """

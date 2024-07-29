@@ -3,14 +3,14 @@ I (MJP) have copied stub code there which we simply need to extend.
 
 ## Test
 
-    echo "This is test." | ./translate.py
+    echo "This is test." | python ensembling/translate.py
     - m2m100 -> C'est un test.
     - nllb-200-distilled-600M -> Il s'agit d'un test.
 
 
 
-    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/nllb-200-distilled-600M --num-beams 5 -l 10
-    echo "This is a test." | ./ensemble.py -t fr -m facebook/m2m100_418M facebook/m2m100_1.2B --num-beams 5 -l 10
+    echo "This is a test." | python ensembling/ensemble.py -t fr -m facebook/m2m100_418M facebook/nllb-200-distilled-600M --num-beams 5 -l 10
+    echo "This is a test." | python ensembling/ensemble.py -t fr -m facebook/m2m100_418M facebook/m2m100_1.2B --num-beams 5 -l 10
 
 
 
@@ -25,13 +25,13 @@ Installation:
 Testing:
 
     # This will interpolate two identical models (nllb)
-    echo "This is a test." | ./ensemble.py -b 10
+    echo "This is a test." | ensembling/ensemble.py -b 10
 
     # This adds noise to the logits of the first model, so interpolotion makes a bit more sense
-    echo "This is a test." | ./ensemble.py -b 10 --noise 2
+    echo "This is a test." | ensembling/ensemble.py -b 10 --noise 2
 
     # German
-    echo "This is a test." | ./ensemble.py -b 5 -t deu_Latn
+    echo "This is a test." | ensembling/ensemble.py -b 5 -t deu_Latn
 
 ## TODO
 - [x] Ensemble the same model twice (passed in as two models)
@@ -93,3 +93,13 @@ model name -> params(
 ## Notes
 
 Huggingface beam search pops items off the beam when they are finished, and continues generating using normal beam search, until there are enough complete items. Another strategy would be to keep those items in the beam and ignore them.
+
+## Unit Testing
+
+We wrote a script to collect scores from M2M100. It runs like this:
+
+```
+sacrebleu -t wmt14 -l en-fr --echo src ref | python unit-tests.py
+```
+
+We'll use this to determine logprobs for unit tests.
