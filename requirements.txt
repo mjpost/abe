@@ -1,4 +1,4 @@
-transformers==4.38.1
+transformers
 torch
 sentencepiece
 pytest

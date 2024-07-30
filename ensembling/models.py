@@ -22,34 +22,30 @@ from transformers.generation.stopping_criteria import MaxLengthCriteria
 def get_model_bundle(
         model_name: str,
         target_language: Optional[str] = "fr",
+        source_language: Optional[str] = "en",
         ) -> "Bundle":
 
     print(f"* Instantiating model {model_name}", file=sys.stderr)
 
     if model_name == "facebook/nllb-200-distilled-600M":
+        # eventual todo: move into a json/different file to import/load etc
         lang_map = {
             "fr": "fra_Latn",
             "de": "deu_Latn",
+            "en": "eng_Latn",
         }
 
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
-        tokenizer = NllbTokenizer.from_pretrained(model_name)
+        tokenizer = NllbTokenizer.from_pretrained(model_name, src_lang=lang_map[source_language], tgt_lang=lang_map[target_language])
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        bos_force_token = tokenizer.lang_code_to_id[lang_map.get(target_language, target_language)]
+        bos_force_token = tokenizer.convert_tokens_to_ids([lang_map.get(target_language, target_language)])[0]
         return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
-    elif model_name == "facebook/m2m100_418M":
+    elif model_name in ["facebook/m2m100_418M", "facebook/m2m100_1.2B"]:
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-        tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
+        tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang=source_language, tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
-        bos_force_token = tokenizer.lang_code_to_id[target_language]
-        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
-
-    elif model_name == "facebook/m2m100_1.2B":
-        from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-        tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang="en", tgt_lang=target_language)
-        model = M2M100ForConditionalGeneration.from_pretrained(model_name)
-        bos_force_token = tokenizer.lang_code_to_id[target_language]
+        bos_force_token = tokenizer.convert_tokens_to_ids([f"__{target_language}__"])[0]
         return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     else:
@@ -91,9 +87,6 @@ class Bundle:
 
         # use this to record historical beam indices if you choose
         self.beam_indices = None
-        # self.beam_indices = (
-        #     tuple(() for _ in range(batch_beam_size))
-        # )
 
         self.pad_token_id = self.tokenizer.pad_token_id
         self.eos_token_ids = self.tokenizer.eos_token_id
@@ -182,9 +175,7 @@ class Bundle:
         self.model._validate_model_kwargs(self.model_kwargs.copy())
 
         # Now: initialize the output states
-        self.output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long)
-        self.output_ids = self.output_ids * self.model.config.decoder_start_token_id
-        # print("MODEL START TOKEN", self.model.config.decoder_start_token_id)
+        self.output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.model.config.decoder_start_token_id
 
         batch_size = 1
         batch_beam_size, cur_len = self.output_ids.shape
@@ -200,12 +191,6 @@ class Bundle:
             self.output_ids = torch.cat([self.output_ids, forced_tokens], dim=-1)
 
             self.step(sequential=False)
-            # step_outputs = self.model.step()
-            # next_token_logits = step_outputs.logits[:, -1, :]
-            # print("* OUTPUTS.LOGITS", next_token_logits.shape)
-
-        # These store individual models' tokenized outputs
-        # self.model_output_ids.append(self.output_ids)
 
         self.decoder_prompt_len = self.output_ids.shape[-1]
 
@@ -216,16 +201,11 @@ class Bundle:
         Takes a step in the generation loop after preparing the inputs.
         """
 
-        # print("STEP INPUTS")
-        # for key in step_inputs.keys():
-        #     print("->", key, type(step_inputs[key]))
-
         if sequential:
             # some inputs have pad ids and will need to be re-padded after taking the step
             output_len = self.output_ids.shape[1]
 
             # TODO: split one-by-one
-            # step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
             split_kwargs = _split_model_inputs(
                 self.model_kwargs, split_size=self.batch_size, full_batch_size=self.batch_beam_size
             )
@@ -255,7 +235,6 @@ class Bundle:
         else:
             # 0 is masked, 1 is not masked
             step_inputs = self.model.prepare_inputs_for_generation(self.output_ids, **self.model_kwargs)
-            # print("STEP INPUTS", step_inputs.keys())
             attention_mask = (self.output_ids != self.pad_token_id).int().to(self.device)
             step_outputs = self.model(
                 **step_inputs,
@@ -264,7 +243,6 @@ class Bundle:
             )
 
         next_token_logits = step_outputs.logits[:, -1, :]
-        # print("* OUTPUTS.LOGITS", next_token_logits.shape)
 
         # Massage the logits. This is how prefix decoding is enforced.
         next_token_logits_processed = self.logits_processor(self.output_ids, next_token_logits)
@@ -295,7 +273,6 @@ class Bundle:
             print("BEAM", step)
         for i in range(self.output_ids.shape[0]):
             tokens = self.tokenizer.convert_ids_to_tokens(self.output_ids[i].tolist())
-                # print(i, output_ids[i].tolist())
             token_str = self.tokenizer.decode(self.output_ids[i], skip_special_tokens=True)
             print(i, f"len={len(tokens)}", self.beam_scores.view(self.batch_size, self.num_beams)[0][i], " ".join(tokens), self.output_ids[i], token_str)
         print()
@@ -384,7 +361,7 @@ class Bundle:
         print("UPDATE", beam_idx, beam_next_tokens, beam_scores)
 
         # extend the sequence of generated output tokens
-        self.output_ids = torch.cat([self.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
+        self.output_ids = torch.cat([self.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1) # this is where padding needs to be fixed
 
         if step_outputs is not None:
             self.model_kwargs = self._update_model_kwargs_for_generation(
