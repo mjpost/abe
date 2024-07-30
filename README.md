@@ -20,7 +20,7 @@ Installation:
 
     python3 -m venv venv
     . venv/bin/activate
-    pip install -r requirements.txt
+    
 
 Testing:
 
@@ -103,3 +103,14 @@ sacrebleu -t wmt14 -l en-fr --echo src ref | python unit-tests.py
 ```
 
 We'll use this to determine logprobs for unit tests.
+
+## Code Review:
+Ensemble.py
+1. Line 570: Random gaussian noise to logits processor only to model[0]
+2. Line 578: Comment that says normally we will use beam search, but we will have to implement it. Does it mean implementing naive beam search? Not sure.
+3. Line 202: Should we generalize to n-models? If so, can it be on the lower priority?
+4. Line 212: Probably where we should set the first decoder token. Can confirm that it is not set here. </s> + <lang_id>? 
+5. Line 213: set_input returns encoder_input_ids, self.encoder_outputs
+6. Line 261: Add preprocesser abstraction ToDO - commented by Matt. What needs to be done?
+7. 
+

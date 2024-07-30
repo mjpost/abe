@@ -163,7 +163,6 @@ class Bundle:
         self.beam_scores = torch.zeros((self.batch_size, num_beams), dtype=torch.float, device=self.device)
         self.beam_scores[:, 1:] = -1e9
         self.beam_scores = self.beam_scores.view((self.batch_size * num_beams,))
-
         self.encoder_attentions = None
         self.encoder_hidden_states = None
         if self.is_encoder_decoder:
