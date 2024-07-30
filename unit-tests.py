@@ -51,6 +51,11 @@ LANG_MAP = {
 #         return sum(input_logprobs)
 
 def get_scores(model, tokenizer, source, reference, source_language="en", target_language="fr"):
+    '''
+    Gets the model scores for a given source and reference pair.
+    Adds </s>, <lang_code> (prefix), and </s> (suffix) tokens to the reference respectively.
+    Returns the sum of log probabilities of the reference tokens given the source.
+    '''
     source_ids = tokenizer(source, return_tensors="pt").input_ids
     reference_ids = torch.tensor([[2] + [tokenizer.lang_code_to_id[target_language]] + tokenizer.convert_tokens_to_ids(tokenizer.tokenize(reference)) + [2]])
 
@@ -75,6 +80,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.model == "facebook/nllb-200-distilled-600M":
+        '''
+        NLLB model uses a Seq2SeqLM model, while M2M100 uses a ConditionalGeneration model. 
+        '''
         src = LANG_MAP.get(args.src, args.src)
         tgt = LANG_MAP.get(args.tgt, args.tgt)
         tokenizer = NllbTokenizer.from_pretrained(args.model, src_lang=src, tgt_lang=tgt)
@@ -90,6 +98,5 @@ if __name__ == "__main__":
 
     for line in istream:
         source, reference = line.strip().split("\t")
-
         score = get_scores(model, tokenizer, source, reference, src, tgt)
         print(score)
