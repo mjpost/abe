@@ -5,7 +5,7 @@ from collections import defaultdict
 import heapq
 import sys
 import torch
-
+import json
 from typing import Optional, Tuple, Union, List, Dict, Any
 from torch import nn, LongTensor
 
@@ -431,19 +431,24 @@ def main(args):
             RandomNoiseLogitsProcessor(args.noise)
         )
 
-    input_source = ["This is a test."]
+    
+    
 
     # for line in sys.stdin:
-    for line in input_source:
-        line = line.rstrip()
-
+    with open(args.input_file_path) as f:
+        input_data = json.load(f)
+    
+    input_sentences = [list(item.values())[0] for item in input_data]
+    
+    for item in input_sentences:
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, models, num_beams=args.num_beams, max_length=args.max_output_tokens)
+        outputs = ensemble_beam_search(item, models, num_beams=args.num_beams, max_length=args.max_output_tokens)
         print(outputs[0], outputs[1])
 
         # decode with the combined vocabulary
         # result = models[0].tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
         # print(result)
+        
 
 
 if __name__ == "__main__":
@@ -451,6 +456,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
     parser.add_argument("--source-lang", "-s", type=str, default="en", help="Source language")
+    parser.add_argument("--input_file_path", type = str, default = "./input_data/en.json", help="Input file path")
     parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=4, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
