@@ -24,6 +24,7 @@ def get_model_bundle(
         model_name: str,
         target_language: Optional[str] = "fr",
         source_language: Optional[str] = "en",
+        device: Optional[torch.device] = None,
         ) -> "Bundle":
 
     print(f"* Instantiating model {model_name}", file=sys.stderr)
@@ -40,17 +41,21 @@ def get_model_bundle(
         tokenizer = NllbTokenizer.from_pretrained(model_name, src_lang=lang_map[source_language], tgt_lang=lang_map[target_language])
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         bos_force_token = tokenizer.convert_tokens_to_ids([lang_map.get(target_language, target_language)])[0]
-        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     elif model_name in ["facebook/m2m100_418M", "facebook/m2m100_1.2B"]:
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
         tokenizer = M2M100Tokenizer.from_pretrained(model_name, src_lang=source_language, tgt_lang=target_language)
         model = M2M100ForConditionalGeneration.from_pretrained(model_name)
         bos_force_token = tokenizer.convert_tokens_to_ids([f"__{target_language}__"])[0]
-        return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True)
 
     else:
         raise ValueError(f"Unknown model name: {model_name}")
+    
+    model.eval()
+    model = model.to(device)
+
+    return Bundle(model=model, tokenizer=tokenizer, bos_force_token=bos_force_token, is_encoder_decoder=True, device=device)
+
 
 
 class ModelState:
@@ -134,7 +139,7 @@ class Bundle:
         for passing in the generation loop in step().
         """
         input = self.tokenizer(line, return_tensors=return_tensors)
-        encoder_input_ids = input.input_ids
+        encoder_input_ids = input.input_ids.to(self.device)
 
         self.stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=max_length)])
 
@@ -260,7 +265,7 @@ class Bundle:
         """
         sequence = self.output_ids[beam_index]
         if token_id is not None:
-            sequence = torch.cat([sequence, torch.tensor([token_id])], dim=-1)
+            sequence = torch.cat([sequence, torch.tensor([token_id], device=self.device)], dim=-1)
         return self.tokenizer.decode(sequence, skip_special_tokens=True)
 
     def id_to_token(self, token_id):
@@ -371,7 +376,7 @@ class Bundle:
             else:
                 next_beam_tokens = self.decoder_tokens[beam_idx[i]]
         self.decoder_tokens = next_beam_tokens
-        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.tokenizer.pad_token_id)
+        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.tokenizer.pad_token_id).to(self.device)
 
         if step_outputs is not None:
             self.model_kwargs = self._update_model_kwargs_for_generation(

@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
+import os, sys
+import logging
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=os.environ.get("LOGLEVEL", "INFO").upper(),
+    stream=sys.stderr,
+)
+logger = logging.getLogger("ensembling")
 
 import argparse
 from collections import defaultdict
 import heapq
-import sys
 import torch
 
 from typing import Optional, Tuple, Union, List, Dict, Any
@@ -24,131 +33,6 @@ from models import get_model_bundle, Bundle
 
 __version__ = "0.1.0"
 
-
-class EnsembleBeam:
-    def __init__(self, models, batch_size, num_beams, target_language, device):
-        self.batch_size = batch_size
-        self.num_beams = num_beams
-        self.target_language = target_language
-        self.device = device
-
-        self.synchronized = [ [ True for _ in range(num_beams) ] for _ in range(batch_size)]
-
-        self.output_strings = ["" for _ in range(num_beams)]
-
-        model_beam_scores = []
-        for _ in models:
-            # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
-            # of the first beam are considered to avoid sampling the exact same tokens across all beams.
-            model_beam_scores.append(torch.zeros((batch_size, num_beams), dtype=torch.float, device=device))
-            model_beam_scores[-1][:, 1:] = -1e9
-            model_beam_scores[-1] = model_beam_scores[-1].view((batch_size * num_beams,))
-
-        self.model_beam_scores = model_beam_scores
-
-        """
-        Advance a model just beyond generation of its BOS tokens.
-        Calling this on each model ensures that they are all in a position
-        to advance freely.
-        """
-        self.model_output_ids = []
-        for model in models:
-            model_output_ids = torch.ones((num_beams, 1), device=device, dtype=torch.long)
-            model_output_ids = model_output_ids * model.model.config.decoder_start_token_id
-
-            # step through the forced BOS token
-            if model.bos_force_token:
-                model_inputs = model.prepare_inputs_for_generation(model_output_ids)
-
-                # Step
-                step_outputs = model.step(model_inputs)
-                # print("* OUTPUTS.LOGITS", next_token_logits.shape)
-
-                forced_tokens = torch.ones((num_beams, 1), device=device, dtype=torch.long) * model.bos_force_token
-                model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
-
-                # Initialize models, including running over force BOS tokens
-            # These store individual models' tokenized outputs
-            self.model_output_ids.append(model_output_ids)
-
-
-class BeamItem:
-    """
-    Represents beam items.
-    """
-    def __init__(self, model_no, index, token, score):
-        self.model_no = model_no  # the model that generated this token (None: synced)
-        self.index = index  # the beam index it extends
-        self.token = token  # the token itself
-        self.score = score  # the score of the token
-
-    def __str__(self):
-        return f"ITEM({self.index}, {self.token}, {self.score} #{self.model_no})"
-
-
-class BeamItemPair:
-    """
-    Represents a pair of beam items.
-    """
-    def __init__(
-            self,
-            cand0: BeamItem,
-            cand1: BeamItem,
-            sync_state=None):
-        """
-        """
-        self.cand0 = cand0
-        self.cand1 = cand1
-        self.sync_state = sync_state
-
-    @property
-    def token0(self):
-        return self.cand0.token
-    
-    @property
-    def token1(self):
-        return self.cand1.token
-
-    @property
-    def score0(self):
-        return self.cand0.score
-    
-    @property
-    def score1(self):
-        return self.cand1.score
-    
-    @property
-    def beam_index(self):
-        return self.cand0.index
-
-    def __getitem__(self, model_i):
-        """
-        Return the beam item for the given model.
-        """
-        return self.cand0 if model_i == 0 else self.cand1
-
-    def __setitem__(self, model_i, value):
-        """
-        Set the beam item for the given model.
-        """
-        if model_i == 0:
-            self.cand0 = value
-        else:
-            self.cand1 = value
-
-    def score(self):
-        """
-        Returns the interpolated score of the pair.
-        """
-        return (self.score0 + self.score1) / 2
-
-    def __str__(self):
-        ensemble_score = self.score()
-        return f"PAIR({ensemble_score:.3f} SYNC{self.sync_state} {self.beam_index} -> {self.token0} ({self.score0:.3f}) / {self.token1} ({self.score1:.3f}))"
-
-    def __lt__(self, other):
-        return self.score() > other.score()
-
 class BeamState():
     def __init__(self, outputs=[], beam_index=0):
         self.outputs = outputs
@@ -158,7 +42,10 @@ class BeamState():
         return sum([output[1].score for output in self.outputs])
 
     def __str__(self):
-        return f"STATE({self.beam_index} {self.outputs})"
+        out_str = f"STATE({self.beam_index})"
+        for output in self.outputs:
+            out_str += f" {output[0]}"
+        return out_str
 
     def __lt__(self, other):
         return self.score() > other.score()
@@ -213,7 +100,10 @@ def compatibility(bundles, next_state):
         leading_string = finished_strings[0]
         compatibilities = [leading_string == fin for fin in finished_strings] + [leading_string.startswith(ufin) for ufin in unfinished_strings]
         if all(compatibilities):
-            return 0, eos_endings
+            if all(eos_endings):
+                return 0, None
+            else:
+                return 1, eos_endings
         else:
             return -1, None
 
@@ -221,13 +111,10 @@ def compatibility(bundles, next_state):
     leading_string = candidate_strings[string_lengths.index(max_length)]
     compatibilities = [leading_string.startswith(candidate_strings[i]) for i in range(num_models)]
     if all(compatibilities):
-        if all(eos_endings):
-            return 0, None
+        if max_length == min_length:
+            return 1, [False for _ in range(num_models)]
         else:
-            if max_length == min_length:
-                return 1, [False for _ in range(num_models)]
-            else:
-                return 1, [l == max_length for l in string_lengths]
+            return 1, [l == max_length for l in string_lengths]
     else:
         return -1, None
     
@@ -289,13 +176,15 @@ def ensemble_beam_search(
         # A heap that will store all beam candidates, used to form the next beam.
         # This will include single-model advances (where one model is behind and is trying to catch up)
         # and paired-model advances (where both models advanced a compatible token).
-        candidates = []
-        paired_outputs = defaultdict(lambda: defaultdict(list))
+        candidates = [] # priority queue/heap
+        visited = set() # keeping track of which states get pushed so we don't push the same one many times
+
+        paired_outputs = defaultdict(lambda: defaultdict(list)) # the list of outputs from each model for each beam
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
             step_outputs, next_token_scores = bundle.step(step_i) #perhaps some room for efficiency here--maybe move below if statement?
-            sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
+            sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores) # k x V
 
             # do top-k selection where the model is behind or synced
             if args.debug:
@@ -322,6 +211,7 @@ def ensemble_beam_search(
                 beam_index=beam_i
             )
             heapq.heappush(candidates, next_state)
+            visited.add(str(next_state))
 
         # Now, we will explore the heap to find the best candidates
         next_beam = []
@@ -330,7 +220,10 @@ def ensemble_beam_search(
 
             # add neighbors regardless of compatibility
             for neighbor in expand_frontier(bundles, next_state, paired_outputs, stalled_states):
-                heapq.heappush(candidates, neighbor)
+                if str(neighbor) not in visited:
+                    visited.add(str(neighbor))
+                    heapq.heappush(candidates, neighbor)
+
 
             compat_code, next_stall_states = compatibility(bundles, next_state)
             if compat_code == 0:
@@ -344,22 +237,9 @@ def ensemble_beam_search(
             elif compat_code == 1:
                 next_beam.append((next_state, next_stall_states))
 
-        # Now, update the beams with the next beam
-
-        # Now we have {topk} x {topk} items, which we need to merge into a single list that will
-        # become the new beam. However, (a) not all items are compatible and (b) we'd like to
-        # avoid quadratic exploration, while still ensuring that we explor a diverse set of 
-        # candidate pairs. To do this, we will walk the 2d grid, pushing joined candidates onto
-        # a heap. At the end, the heap will contain the topk items.
-        #
-        # Note that this is akin to k-best extraction with a monotonic combination function, such
-        # as for binarized parsing.
-
-
-        # PICKUP figuring out when you're done
         if args.debug:
             print("I COUNT", len(beam_completed), "COMPLETED")
-        if len(beam_completed) == num_beams:
+        if len(beam_completed) == num_beams:  # you should break if beam_completed[0] < next_beam[0]
             if args.debug:
                 print("DONE")
             break
@@ -383,9 +263,6 @@ def ensemble_beam_search(
                 print("MODEL", i, "STEP", step_i, "UPDATE", beam_indices, beam_tokens, update_mask)
             bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug)
 
-        # update sync states
-        # sync_states = torch.tensor([beam_selection[j].sync_state for j in range(len(beam_selection))], dtype=torch.short, device=device)
-
     # One case where there aren't completed beams is if our max_steps was too short. We must return the beams anyway
     while len(beam_completed) != num_beams:
         best_cand = next_beam.pop(0)
@@ -399,8 +276,6 @@ def ensemble_beam_search(
     sorted_completions = sorted(beam_completed, key=lambda x: x.score(), reverse=True)
 
     for i, completed in enumerate(beam_completed):
-        # model0_ids, model0_score, model1_ids, model1_score, pair = completed
-        # model_str = bundles[0].get_surface_str(completed.beam_index, completed.outputs[0][1].index)
         model0_str = bundles[0].tokenizer.decode(completed.output_ids[0], skip_special_tokens=True)
         scores = completed.scores
         pair_score = completed.score()
@@ -410,29 +285,6 @@ def ensemble_beam_search(
     best_beam = sorted_completions[0]
     output_str = bundles[0].tokenizer.decode(best_beam.output_ids[0], skip_special_tokens=True)
     return output_str, best_beam.score()
-
-
-def is_compatible(cand0_str, cand1_str):
-    """
-    Determines whether two strings are compatible.
-    If so, the sync state is set to mark the string relationship.
-
-    :return: A tuple of (is_compatible, new_sync_state)
-    """
-    if cand0_str == cand1_str:
-        is_compat = True
-        new_sync_state = 2
-    elif cand0_str.startswith(cand1_str):
-        is_compat = True
-        new_sync_state = 1
-    elif cand1_str.startswith(cand0_str):
-        is_compat = True
-        new_sync_state = 0
-    else:
-        is_compat = False
-        new_sync_state = None
-
-    return is_compat, new_sync_state
 
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
@@ -447,9 +299,12 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    logging.debug(f"Using device: {device}")
+
     models = []
     for model_name in args.model_names:
-        models.append(get_model_bundle(model_name, target_language=args.target_lang))
+        models.append(get_model_bundle(model_name, target_language=args.target_lang, device=device))
 
     if args.noise is not None:
         models[0].logits_processor.append(
@@ -457,7 +312,22 @@ def main(args):
         )
 
     # input_source = ["This is a test.", 
-                    # "this is another test, but it's too long so the model is gonna get stuck before it's able to finish and it won't have enough tokens to generate the eos one."]
+    #                 "this is another test, but it's too long so the model is gonna get stuck before it's able to finish and it won't have enough tokens to generate the eos one."]
+    # input_source = [
+    #     "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs."
+    # ]
+    input_source = [
+        "Jet makers feud over seat width with big orders at stake",
+        "A row has flared up between leading plane makers over the width of tourist-class seats on long-distance flights, setting the tone for a bitter confrontation at this month's Dubai Airshow.",
+        "The dispute focuses on the width of seats provided on long-haul flights for economy passengers - not always the ones most courted by airlines, but whose allocated space holds the key to efficiency claims for the latest jets offered by Airbus SAS and Boeing Co.",
+        "Airbus this week called for an industry standard that would provide for a seat at least 18 inches (46 cm) wide in economy cabins, but its U.S. arch-rival Boeing says it should be for airlines to decide.",
+        "The dispute comes as plane makers vie to sell ever-larger versions of their twin-engined long-distance aircraft, with potentially record orders expected at the November 17-21 event.",
+        "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs.",
+        "Boeing says its revamped \"777X\" will hold 406 people based on economy seats more than 17 inches wide and set out 10 in each row.",
+        "Airbus says the competing version of its A350 will carry 350 people in 18-inch-wide economy seat laid out 9 abreast.",
+        "Plane giants often trade blows on technical matters through advertising in the trade press.",
+        "Now, Airbus is appealing directly to the public ahead of the Dubai Airshow, where the 777X is expected to dominate with more than 100 orders."
+    ]
 
     for line in sys.stdin:
     # for line in input_source:
@@ -470,15 +340,12 @@ def main(args):
         else:
             print(outputs[0])
 
-        # decode with the combined vocabulary
-        # result = models[0].tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-        # print(result)
-
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
+    parser.add_argument("--cpu", action="store_true", default=False)
     parser.add_argument("--source-lang", "-s", type=str, default="en", help="Source language")
     parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=4, help="Number of beams for beam search")
@@ -487,5 +354,8 @@ if __name__ == "__main__":
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--debug", default=False, action="store_true")
     args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger("ensembling").setLevel(logging.DEBUG)
 
     main(args)
