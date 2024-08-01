@@ -1,6 +1,7 @@
 import copy
 import sys
 import torch
+from torch.nn.utils.rnn import pad_sequence
 
 from typing import Any, Dict, Optional, Union, List
 from transformers import PreTrainedModel, PreTrainedTokenizer
@@ -176,6 +177,7 @@ class Bundle:
 
         # Now: initialize the output states
         self.output_ids = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.model.config.decoder_start_token_id
+        self.decoder_tokens = [[self.model.config.decoder_start_token_id] for _ in range(num_beams)]
 
         batch_size = 1
         batch_beam_size, cur_len = self.output_ids.shape
@@ -189,7 +191,7 @@ class Bundle:
         if self.bos_force_token:
             forced_tokens = torch.ones((num_beams, 1), device=self.device, dtype=torch.long) * self.bos_force_token
             self.output_ids = torch.cat([self.output_ids, forced_tokens], dim=-1)
-
+            self.decoder_tokens = [self.decoder_tokens[i] + [self.bos_force_token] for i in range(num_beams)]
             self.step(sequential=False)
 
         self.decoder_prompt_len = self.output_ids.shape[-1]
@@ -338,7 +340,7 @@ class Bundle:
 
         return beam_scores, beam_next_tokens, beam_idx
 
-    def update(self, beam_idx, beam_next_tokens, beam_scores, step_outputs=None):
+    def update(self, beam_idx, beam_next_tokens, beam_scores, step_outputs=None, debug=False):
         """
         Updates the model's beam sequences by extended the specified beam indices with the selected tokens.
         If {step_outputs} is defined, it will update the cache, as well.
@@ -348,20 +350,28 @@ class Bundle:
         :param beam_scores: The beam scores of each item, to add to the running totals
         :param step_outputs: The model outputs from the current step
         """
-        if type(beam_next_tokens) is not torch.Tensor:
-            beam_next_tokens = torch.tensor(beam_next_tokens, device=self.device, dtype=torch.long)
-        if type(beam_idx) is not torch.Tensor:
-            beam_idx = torch.tensor(beam_idx, device=self.device, dtype=torch.long)
+        # if type(beam_next_tokens) is not torch.Tensor:
+        #     beam_next_tokens = torch.tensor(beam_next_tokens, device=self.device, dtype=torch.long)
+        # if type(beam_idx) is not torch.Tensor:
+        #     beam_idx = torch.tensor(beam_idx, device=self.device, dtype=torch.long)
         if type(beam_scores) is not torch.Tensor:
             beam_scores = torch.tensor(beam_scores, device=self.device, dtype=torch.float)
 
         # update the beam scores
         self.beam_scores = beam_scores
 
-        print("UPDATE", beam_idx, beam_next_tokens, beam_scores)
+        if debug:
+            print("UPDATE", beam_idx, beam_next_tokens, beam_scores, file=sys.stderr)
 
         # extend the sequence of generated output tokens
-        self.output_ids = torch.cat([self.output_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1) # this is where padding needs to be fixed
+        next_beam_tokens = []
+        for i in range(self.num_beams):
+            if beam_next_tokens[i] != self.tokenizer.pad_token_id:    
+                next_beam_tokens.append(self.decoder_tokens[beam_idx[i]] + [beam_next_tokens[i]])
+            else:
+                next_beam_tokens = self.decoder_tokens[beam_idx[i]]
+        self.decoder_tokens = next_beam_tokens
+        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.tokenizer.pad_token_id)
 
         if step_outputs is not None:
             self.model_kwargs = self._update_model_kwargs_for_generation(
