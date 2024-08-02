@@ -273,7 +273,8 @@ def ensemble_beam_search(
         # There is a constraint on updating: a model can only update beam items
         # where the sync state is 2 (both models were already in sync) or where
         # the sync state is the model number (that model was behind).
-        print(f"VISITED_STATES: {len(visited)}")
+        if args.debug:
+            print(f"VISITED_STATES: {len(visited)}")
         stalled_states = [[] for _ in range(num_beams)] # beam indexed
         for i, bundle in enumerate(bundles):
             beam_indices = [next_beam[j][0].beam_index for j in range(len(next_beam))]
