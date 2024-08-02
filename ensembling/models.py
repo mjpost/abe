@@ -217,32 +217,32 @@ class Bundle:
             # some inputs have pad ids and will need to be re-padded after taking the step
             output_len = self.output_ids.shape[1]
 
-            # TODO: split one-by-one
-            split_kwargs = _split_model_inputs(
-                self.model_kwargs, split_size=self.batch_size, full_batch_size=self.batch_beam_size
-            )
-            outputs_per_sub_batch = []
-            for output_ids, this_kwargs in zip(self.output_ids[:], split_kwargs):
-                output_ids = output_ids[output_ids != self.pad_token_id].unsqueeze(0)
-                print("OUTPUT_IDS", output_ids.shape, output_ids, this_kwargs.keys())
-                step_inputs = self.model.prepare_inputs_for_generation(output_ids, **this_kwargs)
-                step_outputs = self.model(
-                    **step_inputs,
-                    return_dict=True,
-                    output_attentions=True,
-                    output_hidden_states=True,
-                )
+            # # TODO: split one-by-one
+            # split_kwargs = _split_model_inputs(
+            #     self.model_kwargs, split_size=self.batch_size, full_batch_size=self.batch_beam_size
+            # )
+            # outputs_per_sub_batch = []
+            # for output_ids, this_kwargs in zip(self.output_ids[:], split_kwargs):
+            #     output_ids = output_ids[output_ids != self.pad_token_id].unsqueeze(0)
+            #     print("OUTPUT_IDS", output_ids.shape, output_ids, this_kwargs.keys())
+            #     step_inputs = self.model.prepare_inputs_for_generation(output_ids, **this_kwargs)
+            #     step_outputs = self.model(
+            #         **step_inputs,
+            #         return_dict=True,
+            #         output_attentions=True,
+            #         output_hidden_states=True,
+            #     )
 
-                # adjust lengths
-                outputs_per_sub_batch.append(step_outputs)
-                print("STEP_OUTPUTS", output_len)
-                for key, value in step_outputs.items():
-                    if type(value) is torch.Tensor:
-                        print("->", key, value.shape)
-                    else:
-                        print("->", key, len(value))
+            #     # adjust lengths
+            #     outputs_per_sub_batch.append(step_outputs)
+            #     print("STEP_OUTPUTS", output_len)
+            #     for key, value in step_outputs.items():
+            #         if type(value) is torch.Tensor:
+            #             print("->", key, value.shape)
+            #         else:
+            #             print("->", key, len(value))
 
-            step_outputs = stack_model_outputs(outputs_per_sub_batch)        
+            # step_outputs = stack_model_outputs(outputs_per_sub_batch)        
 
         else:
             # 0 is masked, 1 is not masked
@@ -279,12 +279,82 @@ class Bundle:
         sequence = self.output_ids[beam_index]
         if token_id is not None:
             sequence = torch.cat([sequence, torch.tensor([token_id], device=self.device)], dim=-1)
-        return self.tokenizer.decode(sequence, skip_special_tokens=True)
+        return self._decode(sequence, clean_up_tokenization_spaces=False, skip_special_tokens=True)
 
     def id_to_token(self, token_id):
         return self.tokenizer.convert_ids_to_tokens([token_id])[0]
 
-    
+
+    def _decode(
+        self,
+        token_ids: List[int],
+        skip_special_tokens: bool = False,
+        clean_up_tokenization_spaces: bool = None,
+        spaces_between_special_tokens: bool = True,
+        **kwargs,
+    ) -> str:
+        # from this file https://github.com/huggingface/transformers/blob/v4.43.3/src/transformers/tokenization_utils.py#L405
+        tokenizer = self.tokenizer
+        tokenizer._decode_use_source_tokenizer = kwargs.pop("use_source_tokenizer", False)
+
+        filtered_tokens = tokenizer.convert_ids_to_tokens(token_ids, skip_special_tokens=skip_special_tokens)
+        legacy_added_tokens = set(tokenizer._added_tokens_encoder.keys()) - set(tokenizer.all_special_tokens) | {
+            token for token in tokenizer.additional_special_tokens if tokenizer.convert_tokens_to_ids(token) >= tokenizer.vocab_size
+        }
+        # To avoid mixing byte-level and unicode for byte-level BPT
+        # we need to build string separately for added tokens and byte-level tokens
+        # cf. https://github.com/huggingface/transformers/issues/1133
+        sub_texts = []
+        current_sub_text = []
+        # TODO @ArthurZ in version 5, special tokens should be handled in convert_tokens_to_string, while _convert_tokens_to_string
+        for token in filtered_tokens:
+            if skip_special_tokens and token in tokenizer.all_special_ids:
+                continue
+            if token in legacy_added_tokens:
+                if current_sub_text:
+                    string = tokenizer.convert_tokens_to_string(current_sub_text)
+                    if len(string) > 0:
+                        sub_texts.append(string)
+                    current_sub_text = []
+                sub_texts.append(token)
+            else:
+                current_sub_text.append(token)
+        if current_sub_text:
+            sub_texts.append(self.convert_tokens_to_string(current_sub_text))
+
+        if spaces_between_special_tokens:
+            text = " ".join(sub_texts)
+        else:
+            text = "".join(sub_texts)
+
+        clean_up_tokenization_spaces = (
+            clean_up_tokenization_spaces
+            if clean_up_tokenization_spaces is not None
+            else tokenizer.clean_up_tokenization_spaces
+        )
+        if clean_up_tokenization_spaces:
+            clean_text = tokenizer.clean_up_tokenization(text)
+            return clean_text
+        else:
+            return text
+        
+    def convert_tokens_to_string(self, tokens):
+        # from this file https://github.com/huggingface/transformers/blob/v4.43.3/src/transformers/tokenization_utils.py#L405
+        """Converts a sequence of tokens (string) in a single string."""
+        tokenizer = self.tokenizer
+        
+        current_sub_tokens = []
+        out_string = ""
+        
+        for token in tokens:
+            # make sure that special tokens are not decoded using sentencepiece model
+            if token in tokenizer.all_special_tokens:
+                out_string += tokenizer.sp_model.decode(current_sub_tokens) + token
+                current_sub_tokens = []
+            else:
+                current_sub_tokens.append(token)
+        out_string += tokenizer.sp_model.decode(current_sub_tokens)
+        return out_string
 
     def print_beam(self, model_i=None, step=None):
         if model_i is not None:

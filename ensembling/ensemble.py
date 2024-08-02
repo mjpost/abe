@@ -97,9 +97,6 @@ def compatibility(bundles, next_state):
     # -1 means incompatible
     num_models = len(bundles)
     candidate_strings = [bundles[i].get_surface_str(next_state.beam_index, next_state.outputs[i][1].index) for i in range(num_models)]
-    
-    if next_state.outputs[1][1].index.item() == 128087:
-        print('here')
         
     string_lengths = [len(candidate_strings[i]) for i in range(num_models)]
 
@@ -192,11 +189,11 @@ def ensemble_beam_search(
     BEAM 1: [Life is like a container], [Life is like a cont]   # -> sync state 1 (model 1 is shorter)
     BEAM 2: [Life is similar to a], [Life is similar to a box]  # -> sync state 0 (model 0 is shorter)
     """
-    for step_i in range(1, max_steps + 1):
+    for step_i in range(1, max_steps + 1): # could change to a while true or count the tokens each model has produced
         # A heap that will store all beam candidates, used to form the next beam.
         # This will include single-model advances (where one model is behind and is trying to catch up)
         # and paired-model advances (where both models advanced a compatible token).
-        candidates = [] # priority queue/heap
+        candidates = [[] for _ in range(num_beams)] # priority queue/heap
         visited = set() # keeping track of which states get pushed so we don't push the same one many times
 
         paired_outputs = defaultdict(lambda: defaultdict(list)) # the list of outputs from each model for each beam
@@ -231,32 +228,34 @@ def ensemble_beam_search(
                 beam_index=beam_i,
                 weights=weights
             )
-            heapq.heappush(candidates, next_state)
+            heapq.heappush(candidates[beam_i], next_state)
             visited.add(str(next_state))
 
         # Now, we will explore the heap to find the best candidates
         next_beam = []
-        while len(next_beam) < num_beams and len(candidates):
-            next_state = heapq.heappop(candidates)
+        while len(next_beam) < num_beams and sum(len(cand) for cand in candidates) > 0:
+            for candidate_heap in candidates:
+                for chance in range(num_beams):
+                    next_state = heapq.heappop(candidate_heap)
 
-            # add neighbors regardless of compatibility
-            for neighbor in expand_frontier(bundles, next_state, paired_outputs, stalled_states):
-                if str(neighbor) not in visited:
-                    visited.add(str(neighbor))
-                    heapq.heappush(candidates, neighbor)
+                    # add neighbors regardless of compatibility
+                    for neighbor in expand_frontier(bundles, next_state, paired_outputs, stalled_states):
+                        if str(neighbor) not in visited:
+                            visited.add(str(neighbor))
+                            heapq.heappush(candidate_heap, neighbor)
 
+                    compat_code, next_stall_states = compatibility(bundles, next_state)
+                    if compat_code == 0:
+                        # all models have terminated with eos
+                        beam_completed.append(Hypothesis(
+                            output_ids = [bundles[i].output_ids[next_state.beam_index] for i in range(num_models)],
+                            scores = [next_state.outputs[i][1].score for i in range(num_models)],
+                        ))
+                    elif compat_code == 1:
+                        next_beam.append((next_state, next_stall_states))
 
-            compat_code, next_stall_states = compatibility(bundles, next_state)
-            if compat_code == 0:
-                # all models have terminated with eos
-                beam_completed.append(Hypothesis(
-                    output_ids = [bundles[i].output_ids[next_state.beam_index] for i in range(num_models)],
-                    scores = [next_state.outputs[i][1].score for i in range(num_models)],
-                ))
-                if len(beam_completed) == num_beams:
-                    break
-            elif compat_code == 1:
-                next_beam.append((next_state, next_stall_states))
+        # trim beam:
+        next_beam = sorted(next_beam, key=lambda x: x[0].score(), reverse=True)[:num_beams]
 
         if args.debug:
             print("I COUNT", len(beam_completed), "COMPLETED")
@@ -274,6 +273,7 @@ def ensemble_beam_search(
         # There is a constraint on updating: a model can only update beam items
         # where the sync state is 2 (both models were already in sync) or where
         # the sync state is the model number (that model was behind).
+        print(f"VISITED_STATES: {len(visited)}")
         stalled_states = [[] for _ in range(num_beams)] # beam indexed
         for i, bundle in enumerate(bundles):
             beam_indices = [next_beam[j][0].beam_index for j in range(len(next_beam))]
