@@ -117,7 +117,7 @@ class Bundle:
         self.beam_scores = None
 
         self.bad_words = [
-            [_ for _ in tokenizer.added_tokens_decoder.keys() if _ not in [0, tokenizer.eos_token_id]]
+            [_ for _ in tokenizer.added_tokens_decoder.keys() if _ not in [tokenizer.eos_token_id]]
         ]
         self.logits_processor = LogitsProcessorList(
             [NoBadWordsLogitsProcessor(bad_words_ids=self.bad_words)]

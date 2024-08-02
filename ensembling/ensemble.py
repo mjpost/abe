@@ -253,6 +253,8 @@ def ensemble_beam_search(
                         ))
                     elif compat_code == 1:
                         next_beam.append((next_state, next_stall_states))
+                if step_i == 1:
+                    break
 
         # trim beam:
         next_beam = sorted(next_beam, key=lambda x: x[0].score(), reverse=True)[:num_beams]
@@ -322,6 +324,8 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 
 def main(args):
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     logging.debug(f"Using device: {device}")
