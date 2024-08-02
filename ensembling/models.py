@@ -4,7 +4,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from typing import Any, Dict, Optional, Union, List
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer, NoBadWordsLogitsProcessor
 
 from transformers import (
     LogitsProcessorList,
@@ -116,7 +116,12 @@ class Bundle:
 
         self.beam_scores = None
 
-        self.logits_processor = LogitsProcessorList()
+        self.bad_words = [
+            [_ for _ in tokenizer.added_tokens_decoder.keys() if _ not in [0, tokenizer.eos_token_id]]
+        ]
+        self.logits_processor = LogitsProcessorList(
+            [NoBadWordsLogitsProcessor(bad_words_ids=self.bad_words)]
+        )
         if self.bos_force_token is not None:
             self.logits_processor.append(
                 ForcedBOSTokenLogitsProcessor(bos_force_token)
@@ -249,13 +254,21 @@ class Bundle:
                 return_dict=True,
             )
 
-        next_token_logits = step_outputs.logits[:, -1, :]
+        # Get the logits for the next token
+        # torch selection for BATCH X SEQUENCE LENGTH X VOCABULARY
+        # torch.arange will create a index for each batch index position
+        # then we select the last non pad item in each sequence
+        # last item is length of sequence -1 to account for 0-indexing
+        next_token_logits = step_outputs.logits[torch.arange(4), ((self.output_ids != self.pad_token_id).sum(dim=1)-1)]
 
         # Massage the logits. This is how prefix decoding is enforced.
         next_token_logits_processed = self.logits_processor(self.output_ids, next_token_logits)
+        for bad_word in self.bad_words:
+            next_token_logits_processed[:, bad_word] = -float("inf")
         next_token_scores = torch.nn.functional.log_softmax(
             next_token_logits_processed, dim=-1
         )  # (batch_size * num_beams, vocab_size)
+
 
         return step_outputs, next_token_scores
 
@@ -374,7 +387,7 @@ class Bundle:
             if beam_next_tokens[i] != self.tokenizer.pad_token_id:    
                 next_beam_tokens.append(self.decoder_tokens[beam_idx[i]] + [beam_next_tokens[i]])
             else:
-                next_beam_tokens = self.decoder_tokens[beam_idx[i]]
+                next_beam_tokens.append(self.decoder_tokens[beam_idx[i]])
         self.decoder_tokens = next_beam_tokens
         self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.tokenizer.pad_token_id).to(self.device)
 

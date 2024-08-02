@@ -34,21 +34,34 @@ from models import get_model_bundle, Bundle
 __version__ = "0.1.0"
 
 class BeamState():
-    def __init__(self, outputs=[], beam_index=0):
-        self.outputs = outputs
+    def __init__(self, outputs=None, beam_index=0, weights=None):
+        self.outputs = outputs # list of tuples (id, TokenExtension)
         self.beam_index = beam_index
+        if weights is None:
+            self.weights = [(1.0 / len(outputs)) for _ in range(len(outputs))]
+        else:
+            self.weights = weights
 
     def score(self):
-        return sum([output[1].score for output in self.outputs])
+        return sum([self.weights[i] * output[1].score for i, output in enumerate(self.outputs)])
 
     def __str__(self):
         out_str = f"STATE({self.beam_index})"
         for output in self.outputs:
             out_str += f" {output[0]}"
         return out_str
+    
+    # def __hash__(self):
+    #     return hash((self.outputs, self.beam_index))
 
     def __lt__(self, other):
         return self.score() > other.score()
+    
+    # def __gt__(self, other):
+    #     return self.score() > other.score()
+
+    def __eq__(self, other):
+        return self.score() == other.score()
 
 class TokenExtension():
     def __init__(self, score, index, token):
@@ -72,9 +85,9 @@ def expand_frontier(bundles, state, paired_outputs, stalled_states):
                                                  token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id])))
                     )
                 else:
-                    outputs.append(state_output)
+                    outputs.append(state_output) #??
             neighbors.append(
-                BeamState(outputs=outputs, beam_index=beam_i)
+                BeamState(outputs=outputs, beam_index=beam_i, weights=state.weights)
             )
     return neighbors
 
@@ -84,6 +97,10 @@ def compatibility(bundles, next_state):
     # -1 means incompatible
     num_models = len(bundles)
     candidate_strings = [bundles[i].get_surface_str(next_state.beam_index, next_state.outputs[i][1].index) for i in range(num_models)]
+    
+    if next_state.outputs[1][1].index.item() == 128087:
+        print('here')
+        
     string_lengths = [len(candidate_strings[i]) for i in range(num_models)]
 
     eos_endings = [bundles[i].is_eos(next_state.outputs[i][1].index) for i in range(num_models)]
@@ -112,9 +129,11 @@ def compatibility(bundles, next_state):
     compatibilities = [leading_string.startswith(candidate_strings[i]) for i in range(num_models)]
     if all(compatibilities):
         if max_length == min_length:
-            return 1, [False for _ in range(num_models)]
+            ret_val = [False for _ in range(num_models)]
+            return 1, ret_val
         else:
-            return 1, [l == max_length for l in string_lengths]
+            ret_val = [l == max_length for l in string_lengths]
+            return 1, ret_val
     else:
         return -1, None
     
@@ -131,6 +150,7 @@ class Hypothesis():
 def ensemble_beam_search(
         input: str,
         bundles: List[Bundle],
+        weights: Optional[List[float]] = None,
         max_steps: Optional[int] = None,
         num_beams: int = 1,
         debug=False
@@ -208,7 +228,8 @@ def ensemble_beam_search(
                                        token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][0])))
                     for model_i in range(num_models)
                 ],
-                beam_index=beam_i
+                beam_index=beam_i,
+                weights=weights
             )
             heapq.heappush(candidates, next_state)
             visited.add(str(next_state))
@@ -253,12 +274,14 @@ def ensemble_beam_search(
         # There is a constraint on updating: a model can only update beam items
         # where the sync state is 2 (both models were already in sync) or where
         # the sync state is the model number (that model was behind).
+        stalled_states = [[] for _ in range(num_beams)] # beam indexed
         for i, bundle in enumerate(bundles):
             beam_indices = [next_beam[j][0].beam_index for j in range(len(next_beam))]
             beam_tokens = [next_beam[j][0].outputs[i][1].index.item() for j in range(len(next_beam))]
             beam_scores = [next_beam[j][0].outputs[i][1].score for j in range(len(next_beam))]
             update_mask = [next_beam[j][1][i] for j in range(len(next_beam))]
-
+            for j in range(num_beams):
+                stalled_states[j].append(update_mask[j])
             if args.debug:
                 print("MODEL", i, "STEP", step_i, "UPDATE", beam_indices, beam_tokens, update_mask)
             bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug)
@@ -311,6 +334,11 @@ def main(args):
             RandomNoiseLogitsProcessor(args.noise)
         )
 
+    weights = [_ / sum(args.weights) for _ in args.weights] if args.weights is not None else None
+    if weights is not None:
+        if len(weights) != len(models):
+            raise ValueError("Number of weights must match number of models")
+
     # input_source = ["This is a test.", 
     #                 "this is another test, but it's too long so the model is gonna get stuck before it's able to finish and it won't have enough tokens to generate the eos one."]
     # input_source = [
@@ -329,12 +357,17 @@ def main(args):
         "Now, Airbus is appealing directly to the public ahead of the Dubai Airshow, where the 777X is expected to dominate with more than 100 orders."
     ]
 
-    for line in sys.stdin:
-    # for line in input_source:
+    # for line in sys.stdin:
+    for line in input_source:
         line = line.rstrip()
 
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, models, num_beams=args.num_beams, max_steps=args.max_steps, debug=args.debug)
+        outputs = ensemble_beam_search(line, 
+                                       models, 
+                                       num_beams=args.num_beams, 
+                                       max_steps=args.max_steps, 
+                                       weights=weights,
+                                       debug=args.debug)
         if args.debug:
             print(outputs[0], outputs[1])
         else:
@@ -345,6 +378,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
+    parser.add_argument("--weights", default=None, type=float, nargs="+", help="Weights for each model")
     parser.add_argument("--cpu", action="store_true", default=False)
     parser.add_argument("--source-lang", "-s", type=str, default="en", help="Source language")
     parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
