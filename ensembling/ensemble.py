@@ -18,6 +18,8 @@ import torch
 from typing import Optional, Tuple, Union, List, Dict, Any
 from torch import nn, LongTensor
 
+import time
+
 from transformers import (
     LogitsProcessor,
     BeamSearchScorer,
@@ -74,21 +76,26 @@ def expand_frontier(bundles, state, paired_outputs, stalled_states):
     stalls = stalled_states[beam_i]
     neighbors = []
     for model_i, stall in enumerate(stalls):
+        add = True
         if not stall:
             outputs = []
             for output_i, state_output in enumerate(state.outputs):
                 if model_i == output_i:
                     next_id = state_output[0] + 1
-                    outputs.append(
-                        (next_id, TokenExtension(score=paired_outputs[beam_i][model_i][0][next_id],
-                                                 index=paired_outputs[beam_i][model_i][1][next_id],
-                                                 token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id])))
-                    )
+                    if next_id < len(paired_outputs[beam_i][model_i][0]):
+                        outputs.append(
+                            (next_id, TokenExtension(score=paired_outputs[beam_i][model_i][0][next_id],
+                                                    index=paired_outputs[beam_i][model_i][1][next_id],
+                                                    token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id])))
+                        )
+                    else:
+                        add = False
                 else:
                     outputs.append(state_output) #??
-            neighbors.append(
-                BeamState(outputs=outputs, beam_index=beam_i, weights=state.weights)
-            )
+            if add:
+                neighbors.append(
+                    BeamState(outputs=outputs, beam_index=beam_i, weights=state.weights)
+                )
     return neighbors
 
 def compatibility(bundles, next_state):
@@ -96,7 +103,10 @@ def compatibility(bundles, next_state):
     # 1 means compatible
     # -1 means incompatible
     num_models = len(bundles)
-    candidate_strings = [bundles[i].get_surface_str(next_state.beam_index, next_state.outputs[i][1].index) for i in range(num_models)]
+    candidate_strings = []
+    for i in range(num_models):
+        candidate_strings.append(bundles[i].extend_beam_string(next_state.beam_index, next_state.outputs[i][1].index))
+    # candidate_strings = [bundles[i].extend_beam_string(next_state.beam_index, next_state.outputs[i][1].index) for i in range(num_models)]
         
     string_lengths = [len(candidate_strings[i]) for i in range(num_models)]
 
@@ -169,6 +179,7 @@ def ensemble_beam_search(
 
     batch_size = 1  # len(beam_scorer._beam_hyps)
 
+    start_time = time.time()
     for bundle in bundles:
         # Initialize each model with the input
         # TODO: maybe this is where the first decoder token should also be set?
@@ -197,11 +208,14 @@ def ensemble_beam_search(
         visited = set() # keeping track of which states get pushed so we don't push the same one many times
 
         paired_outputs = defaultdict(lambda: defaultdict(list)) # the list of outputs from each model for each beam
+        cached_steps = []
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
             step_outputs, next_token_scores = bundle.step(step_i) #perhaps some room for efficiency here--maybe move below if statement?
             sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores) # k x V
+
+            cached_steps.append(step_outputs)
 
             # do top-k selection where the model is behind or synced
             if args.debug:
@@ -287,7 +301,9 @@ def ensemble_beam_search(
                 stalled_states[j].append(update_mask[j])
             if args.debug:
                 print("MODEL", i, "STEP", step_i, "UPDATE", beam_indices, beam_tokens, update_mask)
-            bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug)
+            # bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=cached_steps[i])
+            bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=None)
+
 
     # One case where there aren't completed beams is if our max_steps was too short. We must return the beams anyway
     while len(beam_completed) != num_beams:
@@ -310,7 +326,7 @@ def ensemble_beam_search(
 
     best_beam = sorted_completions[0]
     output_str = bundles[0].tokenizer.decode(best_beam.output_ids[0], skip_special_tokens=True)
-    return output_str, best_beam.score()
+    return output_str, best_beam.score(), time.time()-start_time
 
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
@@ -325,14 +341,12 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     logging.debug(f"Using device: {device}")
 
     models = []
     for model_name in args.model_names:
-        models.append(get_model_bundle(model_name, target_language=args.target_lang, device=device))
+        models.append(get_model_bundle(model_name, target_language=args.target_lang, device=device, cache=args.cache))
 
     if args.noise is not None:
         models[0].logits_processor.append(
@@ -349,21 +363,22 @@ def main(args):
     # input_source = [
     #     "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs."
     # ]
-    input_source = [
-        "Jet makers feud over seat width with big orders at stake",
-        "A row has flared up between leading plane makers over the width of tourist-class seats on long-distance flights, setting the tone for a bitter confrontation at this month's Dubai Airshow.",
-        "The dispute focuses on the width of seats provided on long-haul flights for economy passengers - not always the ones most courted by airlines, but whose allocated space holds the key to efficiency claims for the latest jets offered by Airbus SAS and Boeing Co.",
-        "Airbus this week called for an industry standard that would provide for a seat at least 18 inches (46 cm) wide in economy cabins, but its U.S. arch-rival Boeing says it should be for airlines to decide.",
-        "The dispute comes as plane makers vie to sell ever-larger versions of their twin-engined long-distance aircraft, with potentially record orders expected at the November 17-21 event.",
-        "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs.",
-        "Boeing says its revamped \"777X\" will hold 406 people based on economy seats more than 17 inches wide and set out 10 in each row.",
-        "Airbus says the competing version of its A350 will carry 350 people in 18-inch-wide economy seat laid out 9 abreast.",
-        "Plane giants often trade blows on technical matters through advertising in the trade press.",
-        "Now, Airbus is appealing directly to the public ahead of the Dubai Airshow, where the 777X is expected to dominate with more than 100 orders."
-    ]
+    # input_source = [
+    #     "Jet makers feud over seat width with big orders at stake",
+    #     "A row has flared up between leading plane makers over the width of tourist-class seats on long-distance flights, setting the tone for a bitter confrontation at this month's Dubai Airshow.",
+    #     "The dispute focuses on the width of seats provided on long-haul flights for economy passengers - not always the ones most courted by airlines, but whose allocated space holds the key to efficiency claims for the latest jets offered by Airbus SAS and Boeing Co.",
+    #     "Airbus this week called for an industry standard that would provide for a seat at least 18 inches (46 cm) wide in economy cabins, but its U.S. arch-rival Boeing says it should be for airlines to decide.",
+    #     "The dispute comes as plane makers vie to sell ever-larger versions of their twin-engined long-distance aircraft, with potentially record orders expected at the November 17-21 event.",
+    #     "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs.",
+    #     "Boeing says its revamped \"777X\" will hold 406 people based on economy seats more than 17 inches wide and set out 10 in each row.",
+    #     "Airbus says the competing version of its A350 will carry 350 people in 18-inch-wide economy seat laid out 9 abreast.",
+    #     "Plane giants often trade blows on technical matters through advertising in the trade press.",
+    #     "Now, Airbus is appealing directly to the public ahead of the Dubai Airshow, where the 777X is expected to dominate with more than 100 orders."
+    # ]
+    istream = sys.stdin if args.input is None else open(args.input, "r")
 
-    # for line in sys.stdin:
-    for line in input_source:
+    for line in istream:
+    # for line in input_source:
         line = line.rstrip()
 
         # normally you would now call beam search, but we need to implement it
@@ -373,15 +388,22 @@ def main(args):
                                        max_steps=args.max_steps, 
                                        weights=weights,
                                        debug=args.debug)
-        if args.debug:
-            print(outputs[0], outputs[1])
-        else:
-            print(outputs[0])
+        output_string = build_output_string(args, outputs)
+        print(output_string)
 
+def build_output_string(args, output):
+    out = ""
+    if args.debug:
+        out += f"PPL: {output[1]}\t"
+    if args.time:
+        out += f"TIME: {output[2]}\t"
+    out += f"{output[0]}"
+    return out
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument("--input", "-i", default=None, type=str, help="Input stream")
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
     parser.add_argument("--weights", default=None, type=float, nargs="+", help="Weights for each model")
     parser.add_argument("--cpu", action="store_true", default=False)
@@ -392,6 +414,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-steps", "-l", type=int, default=30, help="Maximum number of output tokens")
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--debug", default=False, action="store_true")
+    parser.add_argument("--cache", default=False, action='store_true')
+    parser.add_argument("--time", default=False, action='store_true')
     args = parser.parse_args()
 
     if args.debug:
