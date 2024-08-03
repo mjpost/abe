@@ -306,7 +306,7 @@ def ensemble_beam_search(
 
 
     # One case where there aren't completed beams is if our max_steps was too short. We must return the beams anyway
-    while len(beam_completed) != num_beams:
+    while len(beam_completed) < num_beams:
         best_cand = next_beam.pop(0)
         beam_completed.append(
                 Hypothesis(
