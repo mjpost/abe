@@ -43,9 +43,10 @@ class BeamState():
             self.weights = [(1.0 / len(outputs)) for _ in range(len(outputs))]
         else:
             self.weights = weights
+        self.weighted_score = sum([self.weights[i] * output[1].score for i, output in enumerate(self.outputs)])
 
     def score(self):
-        return sum([self.weights[i] * output[1].score for i, output in enumerate(self.outputs)])
+        return self.weighted_score
 
     def __str__(self):
         out_str = f"STATE({self.beam_index})"
@@ -57,13 +58,13 @@ class BeamState():
     #     return hash((self.outputs, self.beam_index))
 
     def __lt__(self, other):
-        return self.score() > other.score()
+        return self.weighted_score > other.weighted_score
     
     # def __gt__(self, other):
     #     return self.score() > other.score()
 
     def __eq__(self, other):
-        return self.score() == other.score()
+        return self.score == other.score
 
 class TokenExtension():
     def __init__(self, score, index, token):
@@ -247,7 +248,7 @@ def ensemble_beam_search(
 
         # Now, we will explore the heap to find the best candidates
         next_beam = []
-        while len(next_beam) < num_beams and sum(len(cand) for cand in candidates) > 0:
+        while len(next_beam) < num_beams and len(beam_completed) < num_beams and sum(len(cand) for cand in candidates) > 0:
             for candidate_heap in candidates:
                 for chance in range(num_beams):
                     next_state = heapq.heappop(candidate_heap)
@@ -275,9 +276,13 @@ def ensemble_beam_search(
 
         if args.debug:
             print("I COUNT", len(beam_completed), "COMPLETED")
-        if len(beam_completed) == num_beams:  # you should break if beam_completed[0] < next_beam[0]
+        if len(beam_completed) >= num_beams:  # you should break if beam_completed[0] < next_beam[0]
             if args.debug:
                 print("DONE")
+            break
+
+        # end early if the best candidate is worse than the best completed beam
+        if len(beam_completed) > 0 and next_beam[0][0].score() < beam_completed[0].score():
             break
 
         for i in range(num_beams):
@@ -341,6 +346,8 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
+    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     logging.debug(f"Using device: {device}")
 
@@ -357,6 +364,10 @@ def main(args):
     if weights is not None:
         if len(weights) != len(models):
             raise ValueError("Number of weights must match number of models")
+
+    # input_source = ["Between the early 1970s, when the Boeing 747 jumbo defined modern long-haul travel, and the turn of the century, the weight of the average American 40- to 49-year-old male increased by 10 per cent, according to U.S. Health Department Data."]
+
+    # input_source = ['"It really comes down to providing flexibility to airlines and allowing them to do the things that they believe they need to do to be successful," said Boeing cabins expert Kent Craver.']
 
     # input_source = ["This is a test.", 
     #                 "this is another test, but it's too long so the model is gonna get stuck before it's able to finish and it won't have enough tokens to generate the eos one."]

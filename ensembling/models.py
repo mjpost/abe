@@ -32,16 +32,12 @@ def get_model_bundle(
 
     if model_name == "facebook/nllb-200-distilled-600M":
         # eventual todo: move into a json/different file to import/load etc
-        lang_map = {
-            "fr": "fra_Latn",
-            "de": "deu_Latn",
-            "en": "eng_Latn",
-        }
+        from lang_map import NLLB_LANGMAP
 
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
-        tokenizer = NllbTokenizer.from_pretrained(model_name, src_lang=lang_map[source_language], tgt_lang=lang_map[target_language])
+        tokenizer = NllbTokenizer.from_pretrained(model_name, src_lang=NLLB_LANGMAP[source_language], tgt_lang=NLLB_LANGMAP[target_language])
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        bos_force_token = tokenizer.convert_tokens_to_ids([lang_map.get(target_language, target_language)])[0]
+        bos_force_token = tokenizer.convert_tokens_to_ids([NLLB_LANGMAP.get(target_language, target_language)])[0]
 
     elif model_name in ["facebook/m2m100_418M", "facebook/m2m100_1.2B"]:
         from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
@@ -119,7 +115,8 @@ class Bundle:
 
         self.beam_scores = None
 
-        self.bad_words = [_ for _ in tokenizer.added_tokens_decoder.keys() if _ not in [tokenizer.eos_token_id]]
+        self.bad_words = [_ for _ in tokenizer.added_tokens_decoder.keys() if _ not in [tokenizer.eos_token_id]] \
+            + [_ for _ in range(len(tokenizer.get_vocab()), model.config.vocab_size)]
         
         self.logits_processor = LogitsProcessorList(
         )
@@ -241,7 +238,7 @@ class Bundle:
         # then we select the last non pad item in each sequence
         # last item is length of sequence -1 to account for 0-indexing
         # next_token_logits = step_outputs.logits[torch.arange(4), ((self.output_ids != self.pad_token_id).sum(dim=1)-1)]
-        next_token_logits = step_outputs.logits[torch.arange(4), ((step_inputs['decoder_input_ids'] != self.pad_token_id).sum(dim=1)-1)]
+        next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['decoder_input_ids'] != self.pad_token_id).sum(dim=1)-1)]
         # next_token_logits = step_outputs.logits[:, -1, :]
 
 
@@ -397,7 +394,7 @@ class Bundle:
         
         for token in tokens:
             # make sure that special tokens are not decoded using sentencepiece model
-            if skipped or token in tokenizer.all_special_tokens:
+            if not skipped and token in tokenizer.all_special_tokens:
                 out_string += tokenizer.sp_model.decode(current_sub_tokens) + token
                 current_sub_tokens = []
             else:
@@ -532,7 +529,7 @@ class Bundle:
         Returns true if the prefix resets the sequence.
         """
         surface = self.extend_beam_string(beam_i, addition)
-        if len(surface.split()) > 1 or surface[-1] == " ":
+        if len(surface) > 0 and (len(surface.split()) > 1 or surface[-1] == " "):
             return True
         return False
 

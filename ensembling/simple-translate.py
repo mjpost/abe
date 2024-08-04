@@ -30,7 +30,7 @@ def load_model(model_name, source_language, target_language):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="facebook/nllb-200-distilled-600M")
+    parser.add_argument("--model_name", "-m", type=str, default="facebook/nllb-200-distilled-600M")
     parser.add_argument("--source_lang", type=str, default="en")
     parser.add_argument("--target_lang", type=str, default="fr")
     parser.add_argument("--input", "-i", default=None, type=str)

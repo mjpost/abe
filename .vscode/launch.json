@@ -13,14 +13,14 @@
             "console": "integratedTerminal",
             "args": [
                 "-l",
-                "75",
+                "256",
                 "--debug",
                 "--weights",
                 "1.0",
                 "1.0",
                 "--cache",
                 "-i",
-                "inputs"
+                "src"
             ]
         }
     ]
