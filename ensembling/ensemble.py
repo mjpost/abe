@@ -306,8 +306,8 @@ def ensemble_beam_search(
                 stalled_states[j].append(update_mask[j])
             if args.debug:
                 print("MODEL", i, "STEP", step_i, "UPDATE", beam_indices, beam_tokens, update_mask)
-            # bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=cached_steps[i])
-            bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=None)
+            bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=cached_steps[i])
+            # bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=None)
 
 
     # One case where there aren't completed beams is if our max_steps was too short. We must return the beams anyway
