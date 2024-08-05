@@ -346,7 +346,7 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+    # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     logging.debug(f"Using device: {device}")
