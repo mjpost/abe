@@ -1,7 +1,7 @@
 NLLB_LANGMAP = {
     "af": "afr_Latn",
     "am": "amh_Ethi",
-    "ar": "ara_Arab",
+    "ar": "arb_Arab",
     "as": "asm_Beng",
     "az": "aze_Latn",
     "ba": "bak_Cyrl",
