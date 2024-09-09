@@ -43,7 +43,7 @@ class BeamState():
             self.weights = [(1.0 / len(outputs)) for _ in range(len(outputs))]
         else:
             self.weights = weights
-        self.weighted_score = sum([self.weights[i] * output[1].score for i, output in enumerate(self.outputs)])
+        self.weighted_score = sum([self.weights[i] * (output[1].score/output[1].hyp_len) for i, output in enumerate(self.outputs)])
 
     def score(self):
         return self.weighted_score
@@ -89,7 +89,7 @@ def expand_frontier(bundles, state, paired_outputs, stalled_states):
                             (next_id, TokenExtension(score=paired_outputs[beam_i][model_i][0][next_id],
                                                     index=paired_outputs[beam_i][model_i][1][next_id],
                                                     token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id]),
-                                                    hyp_len=len(bundles[model_i].decoder_prefixes[beam_i])))
+                                                    hyp_len=len(bundles[model_i].decoder_prefixes[beam_i]) + 1))
                         )
                     else:
                         add = False
@@ -240,7 +240,7 @@ def ensemble_beam_search(
                     (0, TokenExtension(score=paired_outputs[beam_i][model_i][0][0],
                                        index=paired_outputs[beam_i][model_i][1][0],
                                        token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][0]),
-                                       hyp_len=len(bundles[model_i].decoder_prefixes[beam_i])))
+                                       hyp_len=len(bundles[model_i].decoder_prefixes[beam_i]) + 1))
                     for model_i in range(num_models)
                 ],
                 beam_index=beam_i,
