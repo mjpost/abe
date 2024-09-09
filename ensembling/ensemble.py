@@ -67,10 +67,11 @@ class BeamState():
         return self.score == other.score
 
 class TokenExtension():
-    def __init__(self, score, index, token):
+    def __init__(self, score, index, token, hyp_len):
         self.score = score
         self.index = index
         self.token = token
+        self.hyp_len = hyp_len
 
 def expand_frontier(bundles, state, paired_outputs, stalled_states):
     beam_i = state.beam_index
@@ -87,7 +88,8 @@ def expand_frontier(bundles, state, paired_outputs, stalled_states):
                         outputs.append(
                             (next_id, TokenExtension(score=paired_outputs[beam_i][model_i][0][next_id],
                                                     index=paired_outputs[beam_i][model_i][1][next_id],
-                                                    token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id])))
+                                                    token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id]),
+                                                    hyp_len=len(bundles[model_i].decoder_prefixes[beam_i])))
                         )
                     else:
                         add = False
@@ -237,7 +239,8 @@ def ensemble_beam_search(
                 outputs = [
                     (0, TokenExtension(score=paired_outputs[beam_i][model_i][0][0],
                                        index=paired_outputs[beam_i][model_i][1][0],
-                                       token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][0])))
+                                       token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][0]),
+                                       hyp_len=len(bundles[model_i].decoder_prefixes[beam_i])))
                     for model_i in range(num_models)
                 ],
                 beam_index=beam_i,
@@ -364,6 +367,8 @@ def main(args):
     if weights is not None:
         if len(weights) != len(models):
             raise ValueError("Number of weights must match number of models")
+
+    # istream = ["An activist supporter of Jean-Pierre Chevénement in 2002, he later supported Dominique de Villepin in the district from 2010 to 2011."]
 
     # input_source = ["Between the early 1970s, when the Boeing 747 jumbo defined modern long-haul travel, and the turn of the century, the weight of the average American 40- to 49-year-old male increased by 10 per cent, according to U.S. Health Department Data."]
 

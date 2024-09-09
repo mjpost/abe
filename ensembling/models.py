@@ -502,10 +502,10 @@ class Bundle:
         next_decoder_prefixes = []
         for i in range(self.num_beams):
             if beam_next_tokens[i] != self.tokenizer.pad_token_id:    
-                if self.resets_prefix(i, beam_next_tokens[i]):
-                    next_decoder_prefixes.append([beam_next_tokens[i]])
-                else:
-                    next_decoder_prefixes.append(self.decoder_prefixes[beam_idx[i]] + [beam_next_tokens[i]])
+                # if self.resets_prefix(i, beam_next_tokens[i]):
+                #     next_decoder_prefixes.append([beam_next_tokens[i]])
+                # else:
+                next_decoder_prefixes.append(self.decoder_prefixes[beam_idx[i]] + [beam_next_tokens[i]])
                 next_beam_tokens.append(self.decoder_tokens[beam_idx[i]] + [beam_next_tokens[i]])
             else:
                 next_decoder_prefixes.append(self.decoder_prefixes[beam_idx[i]])
