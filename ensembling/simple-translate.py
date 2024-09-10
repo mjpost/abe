@@ -13,17 +13,14 @@ def load_model(model_name, source_language, target_language):
         bos_force_token = tokenizer.convert_tokens_to_ids([f"__{target_language}__"])[0]
 
     elif model_name in ["facebook/nllb-200-distilled-600M"]:
+        from lang_map import NLLB_LANGMAP
         from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
-        lang_map = {
-            "fr": "fra_Latn",
-            "de": "deu_Latn",
-            "en": "eng_Latn",
-        }
+
         tokenizer = NllbTokenizer.from_pretrained(model_name, 
-                                                  src_lang=lang_map[source_language], 
-                                                  tgt_lang=lang_map[target_language])
+                                                  src_lang=NLLB_LANGMAP[source_language], 
+                                                  tgt_lang=NLLB_LANGMAP[target_language])
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        bos_force_token = tokenizer.convert_tokens_to_ids([lang_map.get(target_language, target_language)])[0]
+        bos_force_token = tokenizer.convert_tokens_to_ids([NLLB_LANGMAP.get(target_language, target_language)])[0]
 
     return model, tokenizer, bos_force_token
 
@@ -61,4 +58,4 @@ if __name__ == "__main__":
         if args.time:
             print(f"TIME: {end - start}\t{result}", file=ostream)
         else:
-            print(result[0], file=ostream)
+            print(result, file=ostream)
