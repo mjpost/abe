@@ -1,0 +1,49 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "ensemble",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "ensembling/ensemble.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-l",
+                "256",
+                "--debug",
+                "--weights",
+                "1.0",
+                "1.0",
+                "--cache",
+                "-i",
+                "src"
+            ]
+        },
+        {
+            "name": "ensemble weighted",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "ensembling/ensemble.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-m",
+                "facebook/nllb-200-distilled-600M",
+                "facebook/m2m100_1.2B",
+                "-l",
+                "256",
+                "--debug",
+                "--weights",
+                "2",
+                "1",
+                "--cache",
+                "-i",
+                "src"
+            ]
+        }
+    ]
+}

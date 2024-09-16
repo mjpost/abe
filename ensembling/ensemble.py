@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
+import os, sys
+import logging
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=os.environ.get("LOGLEVEL", "INFO").upper(),
+    stream=sys.stderr,
+)
+logger = logging.getLogger("ensembling")
 
 import argparse
 from collections import defaultdict
 import heapq
-import sys
 import torch
 import json
 from typing import Optional, Tuple, Union, List, Dict, Any
 from torch import nn, LongTensor
+
+import time
 
 from transformers import (
     LogitsProcessor,
@@ -24,138 +35,135 @@ from models import get_model_bundle, Bundle
 
 __version__ = "0.1.0"
 
-
-class EnsembleBeam:
-    def __init__(self, models, batch_size, num_beams, target_language, device):
-        self.batch_size = batch_size
-        self.num_beams = num_beams
-        self.target_language = target_language
-        self.device = device
-
-        self.synchronized = [ [ True for _ in range(num_beams) ] for _ in range(batch_size)]
-
-        self.output_strings = ["" for _ in range(num_beams)]
-
-        model_beam_scores = []
-        for _ in models:
-            # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
-            # of the first beam are considered to avoid sampling the exact same tokens across all beams.
-            model_beam_scores.append(torch.zeros((batch_size, num_beams), dtype=torch.float, device=device))
-            model_beam_scores[-1][:, 1:] = -1e9
-            model_beam_scores[-1] = model_beam_scores[-1].view((batch_size * num_beams,))
-
-        self.model_beam_scores = model_beam_scores
-
-        """
-        Advance a model just beyond generation of its BOS tokens.
-        Calling this on each model ensures that they are all in a position
-        to advance freely.
-        """
-        self.model_output_ids = []
-        for model in models:
-            model_output_ids = torch.ones((num_beams, 1), device=device, dtype=torch.long)
-            model_output_ids = model_output_ids * model.model.config.decoder_start_token_id
-
-            # step through the forced BOS token
-            if model.bos_force_token:
-                model_inputs = model.prepare_inputs_for_generation(model_output_ids)
-
-                # Step
-                step_outputs = model.step(model_inputs)
-                # print("* OUTPUTS.LOGITS", next_token_logits.shape)
-
-                forced_tokens = torch.ones((num_beams, 1), device=device, dtype=torch.long) * model.bos_force_token
-                model_output_ids = torch.cat([model_output_ids, forced_tokens], dim=-1)
-
-                # Initialize models, including running over force BOS tokens
-            # These store individual models' tokenized outputs
-            self.model_output_ids.append(model_output_ids)
-
-
-class BeamItem:
-    """
-    Represents beam items.
-    """
-    def __init__(self, model_no, index, token, score):
-        self.model_no = model_no  # the model that generated this token (None: synced)
-        self.index = index  # the beam index it extends
-        self.token = token  # the token itself
-        self.score = score  # the score of the token
-
-    def __str__(self):
-        return f"ITEM({self.index}, {self.token}, {self.score} #{self.model_no})"
-
-
-class BeamItemPair:
-    """
-    Represents a pair of beam items.
-    """
-    def __init__(
-            self,
-            cand0: BeamItem,
-            cand1: BeamItem,
-            sync_state=None):
-        """
-        """
-        self.cand0 = cand0
-        self.cand1 = cand1
-        self.sync_state = sync_state
-
-    @property
-    def token0(self):
-        return self.cand0.token
-    
-    @property
-    def token1(self):
-        return self.cand1.token
-
-    @property
-    def score0(self):
-        return self.cand0.score
-    
-    @property
-    def score1(self):
-        return self.cand1.score
-    
-    @property
-    def beam_index(self):
-        return self.cand0.index
-
-    def __getitem__(self, model_i):
-        """
-        Return the beam item for the given model.
-        """
-        return self.cand0 if model_i == 0 else self.cand1
-
-    def __setitem__(self, model_i, value):
-        """
-        Set the beam item for the given model.
-        """
-        if model_i == 0:
-            self.cand0 = value
+class BeamState():
+    def __init__(self, outputs=None, beam_index=0, weights=None):
+        self.outputs = outputs # list of tuples (id, TokenExtension)
+        self.beam_index = beam_index
+        if weights is None:
+            self.weights = [(1.0 / len(outputs)) for _ in range(len(outputs))]
         else:
-            self.cand1 = value
+            self.weights = weights
+        self.weighted_score = sum([self.weights[i] * (output[1].score/output[1].hyp_len) for i, output in enumerate(self.outputs)])
 
     def score(self):
-        """
-        Returns the interpolated score of the pair.
-        """
-        return (self.score0 + self.score1) / 2
+        return self.weighted_score
 
     def __str__(self):
-        ensemble_score = self.score()
-        return f"PAIR({ensemble_score:.3f} SYNC{self.sync_state} {self.beam_index} -> {self.token0} ({self.score0:.3f}) / {self.token1} ({self.score1:.3f}))"
+        out_str = f"STATE({self.beam_index})"
+        for output in self.outputs:
+            out_str += f" {output[0]}"
+        return out_str
+    
+    # def __hash__(self):
+    #     return hash((self.outputs, self.beam_index))
 
     def __lt__(self, other):
-        return self.score() > other.score()
+        return self.weighted_score > other.weighted_score
+    
+    # def __gt__(self, other):
+    #     return self.score() > other.score()
+
+    def __eq__(self, other):
+        return self.score == other.score
+
+class TokenExtension():
+    def __init__(self, score, index, token, hyp_len):
+        self.score = score
+        self.index = index
+        self.token = token
+        self.hyp_len = hyp_len
+
+def expand_frontier(bundles, state, paired_outputs, stalled_states):
+    beam_i = state.beam_index
+    stalls = stalled_states[beam_i]
+    neighbors = []
+    for model_i, stall in enumerate(stalls):
+        add = True
+        if not stall:
+            outputs = []
+            for output_i, state_output in enumerate(state.outputs):
+                if model_i == output_i:
+                    next_id = state_output[0] + 1
+                    if next_id < len(paired_outputs[beam_i][model_i][0]):
+                        outputs.append(
+                            (next_id, TokenExtension(score=paired_outputs[beam_i][model_i][0][next_id],
+                                                    index=paired_outputs[beam_i][model_i][1][next_id],
+                                                    token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id]),
+                                                    hyp_len=len(bundles[model_i].decoder_prefixes[beam_i]) + 1))
+                        )
+                    else:
+                        add = False
+                else:
+                    outputs.append(state_output) #??
+            if add:
+                neighbors.append(
+                    BeamState(outputs=outputs, beam_index=beam_i, weights=state.weights)
+                )
+    return neighbors
+
+def compatibility(bundles, next_state):
+    # 0 means compatible and all finished
+    # 1 means compatible
+    # -1 means incompatible
+    num_models = len(bundles)
+    candidate_strings = []
+    for i in range(num_models):
+        candidate_strings.append(bundles[i].extend_beam_string(next_state.beam_index, next_state.outputs[i][1].index))
+    # candidate_strings = [bundles[i].extend_beam_string(next_state.beam_index, next_state.outputs[i][1].index) for i in range(num_models)]
+        
+    string_lengths = [len(candidate_strings[i]) for i in range(num_models)]
+
+    eos_endings = [bundles[i].is_eos(next_state.outputs[i][1].index) for i in range(num_models)]
+
+    max_length = max(string_lengths)
+    min_length = min(string_lengths)
+
+    # if any strings have ended, compatibility must be:
+    # - exactly equal for finished strings
+    # - substring only for unfinished strings
+    if any(eos_endings):
+        finished_strings = [candidate_strings[i] for i in range(num_models) if eos_endings[i]]
+        unfinished_strings = [candidate_strings[i] for i in range(num_models) if not eos_endings[i]]
+        leading_string = finished_strings[0]
+        compatibilities = [leading_string == fin for fin in finished_strings] + [leading_string.startswith(ufin) for ufin in unfinished_strings]
+        if all(compatibilities):
+            if all(eos_endings):
+                return 0, None
+            else:
+                return 1, eos_endings
+        else:
+            return -1, None
+
+    # otherwise, leading string determines compatibility
+    leading_string = candidate_strings[string_lengths.index(max_length)]
+    compatibilities = [leading_string.startswith(candidate_strings[i]) for i in range(num_models)]
+    if all(compatibilities):
+        if max_length == min_length:
+            ret_val = [False for _ in range(num_models)]
+            return 1, ret_val
+        else:
+            ret_val = [l == max_length for l in string_lengths]
+            return 1, ret_val
+    else:
+        return -1, None
+    
+class Hypothesis():
+    def __init__(self, output_ids, scores):
+        self.output_ids = output_ids
+        self.scores = scores
+
+    def score(self):
+        return sum(self.scores) / len(self.scores)
 
 
 @torch.no_grad()
 def ensemble_beam_search(
         input: str,
         bundles: List[Bundle],
-        max_length: Optional[int] = None,
+        weights: Optional[List[float]] = None,
+        max_steps: Optional[int] = None,
         num_beams: int = 1,
+        debug=False
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
@@ -174,17 +182,18 @@ def ensemble_beam_search(
 
     batch_size = 1  # len(beam_scorer._beam_hyps)
 
+    start_time = time.time()
     for bundle in bundles:
         # Initialize each model with the input
         # TODO: maybe this is where the first decoder token should also be set?
-        bundle.set_input(input, num_beams=num_beams, max_length=max_length)
+        bundle.set_input(input, num_beams=num_beams, max_length=max_steps)
 
     # Hypotheses on beams across models are always consistent, but one may be shorter than another.
     # 0: model 0 has a shorter surface string
     # 1: model 1 has a shorter surface string
     # 2: the models are in sync
     # Calls to a model's topk() are not allowed to select from beam items where that model is ahead
-    sync_states = torch.tensor([2 for _ in range(num_beams)], dtype=torch.short, device=device)
+    stalled_states = [[False for _ in range(num_models)] for __ in range(num_beams)]
 
     beam_completed = []  # contains completed sentences
 
@@ -194,220 +203,138 @@ def ensemble_beam_search(
     BEAM 1: [Life is like a container], [Life is like a cont]   # -> sync state 1 (model 1 is shorter)
     BEAM 2: [Life is similar to a], [Life is similar to a box]  # -> sync state 0 (model 0 is shorter)
     """
-    # for step_i in range(1, args.max_output_tokens + 1):
-    for step_i in range(1, max_length + 1):
-
-        # TODO: add preprocessing abstraction
-
-        # transform each row of output_ids into tokens and print
-
+    for step_i in range(1, max_steps + 1): # could change to a while true or count the tokens each model has produced
         # A heap that will store all beam candidates, used to form the next beam.
         # This will include single-model advances (where one model is behind and is trying to catch up)
         # and paired-model advances (where both models advanced a compatible token).
-        beam_candidates = []
+        candidates = [[] for _ in range(num_beams)] # priority queue/heap
+        visited = set() # keeping track of which states get pushed so we don't push the same one many times
 
-        paired_topk = defaultdict(lambda: defaultdict(list))
+        paired_outputs = defaultdict(lambda: defaultdict(list)) # the list of outputs from each model for each beam
+        cached_steps = []
 
         # Take the next step of each model
         for model_i, bundle in enumerate(bundles):
-            other_i = 1 - model_i
             step_outputs, next_token_scores = bundle.step(step_i) #perhaps some room for efficiency here--maybe move below if statement?
-            sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores)
+            sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores) # k x V
+
+            cached_steps.append(step_outputs)
 
             # do top-k selection where the model is behind or synced
-            print("STEP", type(bundle.model), step_i, "MODEL", model_i, "SYNC", sync_states)
-            bundle.print_beam(model_i, step_i)
-            if any(region := ((sync_states == 2) | (sync_states == model_i))):
-                next_indices, next_tokens, next_token_scores = bundle.topk(sequence_scores, region)
+            if args.debug:
+                print("STEP", type(bundle.model), step_i, "MODEL", model_i, "STALL", stalled_states)
+                bundle.print_beam(model_i, step_i)
 
-                # create a candidate out of it
-                for beam_index, token, score in zip(next_indices[0], next_tokens[0], next_token_scores[0]):
-                    beam_index = int(beam_index)
+            for beam_i, beam_expansion in enumerate(sequence_scores):
+                if stalled_states[beam_i][model_i]:
+                    paired_outputs[beam_i][model_i] = torch.tensor([[0], [bundle.tokenizer.pad_token_id]], device=device)
+                else:
+                    paired_outputs[beam_i][model_i] = torch.sort(beam_expansion, descending=True)
 
-                    # print("ITEM model", model_i, "beam", int(beam_index), token, score, bundle.id_to_token(token))
-                    # Advancing from a synced state is done by both models at once. This is handled below.
-                    if sync_states[beam_index] == 2:
-                        paired_topk[beam_index][model_i].append(BeamItem(model_i, beam_index, token, score))
+        # All models have stepped. Start search by seeding the heap with the best candidates from each beam
+        for beam_i in range(num_beams):
+            next_state = BeamState(
+                # 0 signifies that this is the 0th index of the beam item
+                # paired_outputs --> beam_i x model_i x scores x token_ids
+                outputs = [
+                    (0, TokenExtension(score=paired_outputs[beam_i][model_i][0][0],
+                                       index=paired_outputs[beam_i][model_i][1][0],
+                                       token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][0]),
+                                       hyp_len=len(bundles[model_i].decoder_prefixes[beam_i]) + 1))
+                    for model_i in range(num_models)
+                ],
+                beam_index=beam_i,
+                weights=weights
+            )
+            heapq.heappush(candidates[beam_i], next_state)
+            visited.add(str(next_state))
 
-                    elif sync_states[beam_index] == model_i and token != bundle.eos_token_ids:
-                        # Unsynced items can be dealt with immediately by comparing them to their corresponding
-                        # beam item. If consistent, it can be added to the heap.
-                        beam_str = bundles[other_i].get_surface_str(beam_index)  # e.g., "Life is like a box"
-                        this_str = bundle.get_surface_str(beam_index, token)     # e.g., "Life is like a" + "box" -> "Life is like a box" -> 2
+        # Now, we will explore the heap to find the best candidates
+        next_beam = []
+        while len(next_beam) < num_beams and len(beam_completed) < num_beams and sum(len(cand) for cand in candidates) > 0:
+            for candidate_heap in candidates:
+                for chance in range(num_beams):
+                    next_state = heapq.heappop(candidate_heap)
 
-                        # Unfortunately we need to handle the models separately to get the arguments right
-                        if model_i == 0:
-                            is_compat, new_sync_state = is_compatible(this_str, beam_str)
-                            if is_compat:
-                                pair = BeamItemPair(
-                                    BeamItem(model_i, beam_index, token, score), 
-                                    BeamItem(other_i, beam_index, bundles[1].pad_token_id, bundles[1].beam_scores[beam_index]), 
-                                    new_sync_state)
-                                heapq.heappush(beam_candidates, pair)
-                        elif model_i == 1:
-                            is_compat, new_sync_state = is_compatible(beam_str, this_str)
-                            if is_compat:
-                                pair = BeamItemPair(
-                                    BeamItem(other_i, beam_index, bundles[0].pad_token_id, bundles[0].beam_scores[beam_index]), 
-                                    BeamItem(model_i, beam_index, token, score), 
-                                    new_sync_state)
-                                heapq.heappush(beam_candidates, pair)
+                    # add neighbors regardless of compatibility
+                    for neighbor in expand_frontier(bundles, next_state, paired_outputs, stalled_states):
+                        if str(neighbor) not in visited:
+                            visited.add(str(neighbor))
+                            heapq.heappush(candidate_heap, neighbor)
 
-        # Now we have {topk} x {topk} items, which we need to merge into a single list that will
-        # become the new beam. However, (a) not all items are compatible and (b) we'd like to
-        # avoid quadratic exploration, while still ensuring that we explor a diverse set of 
-        # candidate pairs. To do this, we will walk the 2d grid, pushing joined candidates onto
-        # a heap. At the end, the heap will contain the topk items.
-        #
-        # Note that this is akin to k-best extraction with a monotonic combination function, such
-        # as for binarized parsing.
+                    compat_code, next_stall_states = compatibility(bundles, next_state)
+                    if compat_code == 0:
+                        # all models have terminated with eos
+                        beam_completed.append(Hypothesis(
+                            output_ids = [bundles[i].output_ids[next_state.beam_index] for i in range(num_models)],
+                            scores = [next_state.outputs[i][1].score for i in range(num_models)],
+                        ))
+                    elif compat_code == 1:
+                        next_beam.append((next_state, next_stall_states))
+                if step_i == 1:
+                    break
 
-        """
-        paired_topk: top level is beam index (0, 1,, ..., k)
-        Within each, is two lists: extensions of that beam item in model 0, and model 1
-        Think of this as a 2d grid, what we'll do is explore the *entire* grid (not worrying about
-        efficiency for now) to find the pairs in the grid that are compatible, i.e., that generate compatible
-        strings.
+        # trim beam:
+        next_beam = sorted(next_beam, key=lambda x: x[0].score(), reverse=True)[:num_beams]
 
-        prefix: Life is like a (sync state 2)
+        if args.debug:
+            print("I COUNT", len(beam_completed), "COMPLETED")
+        if len(beam_completed) >= num_beams:  # you should break if beam_completed[0] < next_beam[0]
+            if args.debug:
+                print("DONE")
+            break
 
-        model0: box, cont, shipping_crate, cardboard_box
-        model1: box, container, shipp, holder
-
-        compat: (box, box) -> 2, (cont, container) -> 0, (shipping_crate, shipp) -> 1
-        """
-
-        # Now handle paired items, e.g., beam steps taken from synced states
-        for beam_index in sorted(paired_topk.keys()):
-            for i, item0 in enumerate(  paired_topk[beam_index][0]):
-                for j, item1 in enumerate(paired_topk[beam_index][1]):
-
-                    # for synced states, both hyps have to finish together
-                    if bundles[0].is_eos(item0.token) != bundles[1].is_eos(item1.token):
-                        continue
-
-                    # check if the pair is compatible and if so, add it to the beam_candidates queue
-                    cand0_str = bundles[0].get_surface_str(beam_index, item0.token)
-                    cand1_str = bundles[1].get_surface_str(beam_index, item1.token)
-                    is_compat, new_sync_state = is_compatible(cand0_str, cand1_str)
-
-                    if is_compat:
-                        heapq.heappush(beam_candidates, BeamItemPair(
-                            BeamItem(0, beam_index, item0.token, item0.score), 
-                            BeamItem(1, beam_index, item1.token, item1.score), 
-                            new_sync_state)
-                        )
-
-        # Take the top k as the next beam
-        print("GOT", len(beam_candidates), "CANDIDATES")
-
-        # The next beam
-        beam_selection = []
-        while len(beam_selection) < num_beams and len(beam_candidates):
-            cand = heapq.heappop(beam_candidates)
-            print("STEP", step_i, "CAND", cand, cand.cand0.token, bundles[0].eos_token_ids, cand.cand1.token, bundles[1].eos_token_ids)
-            if bundles[0].is_eos(cand.cand0.token) and bundles[1].is_eos(cand.cand1.token):
-                print(step_i, "COMPLETE", cand)
-                beam_completed.append((bundles[0].output_ids[cand.cand0.index], bundles[0].beam_scores[cand.cand0.index], 
-                                       bundles[1].output_ids[cand.cand1.index], bundles[1].beam_scores[cand.cand1.index], cand))
-            else:
-                beam_selection.append(cand)
-
-        """
-        TODO:
-        - TM is going to generate </s> and EOS, LLM needs to ignore
-          - We use [eos] as a separator, big LLMs will not have this
-          - Big LLMs: when do they generated </s>? Just at end-of-response, right? I don't think they mark internal sentences.
-            bundles[0].delete_from_string_tokens = ["[eos]"]
-          - Who controls when the end comes (probably the TM)
-          - bundle.step() needs to handle beam items with different lengths
-
-        In normal beam search, every beam item has the exact same length. This is not the case here.
-
-        normal beam: everything the same length
-        next step, computes self attention (len 4)
-
-            BEAM 0: a b c d
-            BEAM 1: b f g e
-            BEAM 2: a x j d
-
-        What are the inputs to producing the distribution over the vocab for the next step?
-
-        bundle 0:
-            BEAM 0: a b c d _
-            BEAM 1: b f g e a
-            BEAM 2: a x j _ _ 
-        """
-
-
-        # Now enumerate the outputs and use them to update the beams in each sub-model
-        if len(beam_selection) < num_beams:
-            print("* WARNING: not enough candidates", len(beam_selection), "need", num_beams)
-
-            if len(beam_completed) > 0:
-                break
-
-        # PICKUP figuring out when you're done
-        print("I COUNT", len(beam_completed), "COMPLETED")
-        if len(beam_completed) == num_beams:
-            print("DONE")
+        # end early if the best candidate is worse than the best completed beam
+        if len(beam_completed) > 0 and next_beam[0][0].score() < beam_completed[0].score():
             break
 
         for i in range(num_beams):
-            cand0, cand1, new_sync_states = beam_selection[i].cand0, beam_selection[i].cand1, beam_selection[i].sync_state
-            cand0_str = bundles[0].get_surface_str(cand0.index, cand0.token)
-            cand1_str = bundles[1].get_surface_str(cand1.index, cand1.token)
-            print("SELECTED", i, beam_selection[i], cand0_str, "|||", cand1_str)
-        
+            candidates = [next_beam[i][0].outputs[_][1].token for _ in range(num_models)]
+            candidates_strings = " ||| ".join(candidates)
+            if args.debug:
+                print("SELECTED", i, candidates_strings)        
         # Now, go through and update each model with its selection.
         # There is a constraint on updating: a model can only update beam items
         # where the sync state is 2 (both models were already in sync) or where
         # the sync state is the model number (that model was behind).
+        if args.debug:
+            print(f"VISITED_STATES: {len(visited)}")
+        stalled_states = [[] for _ in range(num_beams)] # beam indexed
         for i, bundle in enumerate(bundles):
-            update_mask = [sync_states[j] == 2 or sync_states[j] == i for j in range(len(sync_states))]
-            beam_indices = [beam_selection[j][i].index for j in range(len(beam_selection))]
-            beam_tokens = [beam_selection[j][i].token if update_mask[j] else bundle.pad_token_id for j in range(len(beam_selection))]
-            beam_scores = [beam_selection[j][i].score for j in range(len(beam_selection))]
+            beam_indices = [next_beam[j][0].beam_index for j in range(len(next_beam))]
+            beam_tokens = [next_beam[j][0].outputs[i][1].index.item() for j in range(len(next_beam))]
+            beam_scores = [next_beam[j][0].outputs[i][1].score for j in range(len(next_beam))]
+            update_mask = [next_beam[j][1][i] for j in range(len(next_beam))]
+            for j in range(num_beams):
+                stalled_states[j].append(update_mask[j])
+            if args.debug:
+                print("MODEL", i, "STEP", step_i, "UPDATE", beam_indices, beam_tokens, update_mask)
+            bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=cached_steps[i])
+            # bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=None)
 
-            print("MODEL", i, "STEP", step_i, "UPDATE", beam_indices, beam_tokens, update_mask)
-            bundle.update(beam_indices, beam_tokens, beam_scores)
 
-        # update sync states
-        sync_states = torch.tensor([beam_selection[j].sync_state for j in range(len(beam_selection))], dtype=torch.short, device=device)
-
-    sorted_completions = sorted(beam_completed, key=lambda x: x[4].score(), reverse=True)
+    # One case where there aren't completed beams is if our max_steps was too short. We must return the beams anyway
+    while len(beam_completed) < num_beams:
+        best_cand = next_beam.pop(0)
+        beam_completed.append(
+                Hypothesis(
+                    output_ids = [bundles[i].output_ids[best_cand[0].beam_index] for i in range(num_models)],
+                    scores = [best_cand[0].outputs[i][1].score for i in range(num_models)],
+                )
+        )
+ 
+    sorted_completions = sorted(beam_completed, key=lambda x: x.score(), reverse=True)
 
     for i, completed in enumerate(beam_completed):
-        model0_ids, model0_score, model1_ids, model1_score, pair = completed
-        model0_str = bundles[0].tokenizer.decode(model0_ids, skip_special_tokens=True)
-        print(f"COMPLETED {i}:", model0_str, model0_score, model1_score, pair)
+        model0_str = bundles[0].tokenizer.decode(completed.output_ids[0], skip_special_tokens=True)
+        scores = completed.scores
+        pair_score = completed.score()
+        if args.debug:
+            print(f"COMPLETED {i}:", model0_str, scores, pair_score)
 
     best_beam = sorted_completions[0]
-    output_str = bundles[0].tokenizer.decode(best_beam[0], skip_special_tokens=True)
-    return output_str, best_beam[4].score()
-
-
-def is_compatible(cand0_str, cand1_str):
-    """
-    Determines whether two strings are compatible.
-    If so, the sync state is set to mark the string relationship.
-
-    :return: A tuple of (is_compatible, new_sync_state)
-    """
-    if cand0_str == cand1_str:
-        is_compat = True
-        new_sync_state = 2
-    elif cand0_str.startswith(cand1_str):
-        is_compat = True
-        new_sync_state = 1
-    elif cand1_str.startswith(cand0_str):
-        is_compat = True
-        new_sync_state = 0
-    else:
-        is_compat = False
-        new_sync_state = None
-
-    return is_compat, new_sync_state
+    output_str = bundles[0].tokenizer.decode(best_beam.output_ids[0], skip_special_tokens=True)
+    return output_str, best_beam.score(), time.time()-start_time
 
 
 class RandomNoiseLogitsProcessor(LogitsProcessor):
@@ -422,46 +349,93 @@ class RandomNoiseLogitsProcessor(LogitsProcessor):
 
 def main(args):
 
+    # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    logging.debug(f"Using device: {device}")
+
     models = []
     for model_name in args.model_names:
-        models.append(get_model_bundle(model_name, target_language=args.target_lang))
+        models.append(get_model_bundle(model_name, target_language=args.target_lang, device=device, cache=args.cache))
 
     if args.noise is not None:
         models[0].logits_processor.append(
             RandomNoiseLogitsProcessor(args.noise)
         )
 
-    
-    
+    weights = [_ / sum(args.weights) for _ in args.weights] if args.weights is not None else None
+    if weights is not None:
+        if len(weights) != len(models):
+            raise ValueError("Number of weights must match number of models")
 
-    # for line in sys.stdin:
-    with open(args.input_file_path) as f:
-        input_data = json.load(f)
-    
-    input_sentences = [list(item.values())[0] for item in input_data]
-    
-    for item in input_sentences:
+    # istream = ["An activist supporter of Jean-Pierre Chevénement in 2002, he later supported Dominique de Villepin in the district from 2010 to 2011."]
+
+    # input_source = ["Between the early 1970s, when the Boeing 747 jumbo defined modern long-haul travel, and the turn of the century, the weight of the average American 40- to 49-year-old male increased by 10 per cent, according to U.S. Health Department Data."]
+
+    # input_source = ['"It really comes down to providing flexibility to airlines and allowing them to do the things that they believe they need to do to be successful," said Boeing cabins expert Kent Craver.']
+
+    # input_source = ["This is a test.", 
+    #                 "this is another test, but it's too long so the model is gonna get stuck before it's able to finish and it won't have enough tokens to generate the eos one."]
+    # input_source = [
+    #     "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs."
+    # ]
+    # input_source = [
+    #     "Jet makers feud over seat width with big orders at stake",
+    #     "A row has flared up between leading plane makers over the width of tourist-class seats on long-distance flights, setting the tone for a bitter confrontation at this month's Dubai Airshow.",
+    #     "The dispute focuses on the width of seats provided on long-haul flights for economy passengers - not always the ones most courted by airlines, but whose allocated space holds the key to efficiency claims for the latest jets offered by Airbus SAS and Boeing Co.",
+    #     "Airbus this week called for an industry standard that would provide for a seat at least 18 inches (46 cm) wide in economy cabins, but its U.S. arch-rival Boeing says it should be for airlines to decide.",
+    #     "The dispute comes as plane makers vie to sell ever-larger versions of their twin-engined long-distance aircraft, with potentially record orders expected at the November 17-21 event.",
+    #     "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs.",
+    #     "Boeing says its revamped \"777X\" will hold 406 people based on economy seats more than 17 inches wide and set out 10 in each row.",
+    #     "Airbus says the competing version of its A350 will carry 350 people in 18-inch-wide economy seat laid out 9 abreast.",
+    #     "Plane giants often trade blows on technical matters through advertising in the trade press.",
+    #     "Now, Airbus is appealing directly to the public ahead of the Dubai Airshow, where the 777X is expected to dominate with more than 100 orders."
+    # ]
+    istream = sys.stdin if args.input is None else open(args.input, "r")
+
+    for line in istream:
+    # for line in input_source:
+        line = line.rstrip()
+
         # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(item, models, num_beams=args.num_beams, max_length=args.max_output_tokens)
-        print(outputs[0], outputs[1])
+        outputs = ensemble_beam_search(line, 
+                                       models, 
+                                       num_beams=args.num_beams, 
+                                       max_steps=args.max_steps, 
+                                       weights=weights,
+                                       debug=args.debug)
+        output_string = build_output_string(args, outputs)
+        print(output_string)
 
-        # decode with the combined vocabulary
-        # result = models[0].tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-        # print(result)
-        
-
+def build_output_string(args, output):
+    out = ""
+    if args.debug:
+        out += f"PPL: {output[1]}\t"
+    if args.time:
+        out += f"TIME: {output[2]}\t"
+    out += f"{output[0]}"
+    return out
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument("--input", "-i", default=None, type=str, help="Input stream")
     parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
+    parser.add_argument("--weights", default=None, type=float, nargs="+", help="Weights for each model")
+    parser.add_argument("--cpu", action="store_true", default=False)
     parser.add_argument("--source-lang", "-s", type=str, default="en", help="Source language")
     parser.add_argument("--input_file_path", type = str, default = "./input_data/en.json", help="Input file path")
     parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
     parser.add_argument("--num-beams", "-b", type=int, default=4, help="Number of beams for beam search")
     parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
-    parser.add_argument("--max-output-tokens", "-l", type=int, default=30, help="Maximum number of output tokens")
+    parser.add_argument("--max-steps", "-l", type=int, default=30, help="Maximum number of output tokens")
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--debug", default=False, action="store_true")
+    parser.add_argument("--cache", default=False, action='store_true')
+    parser.add_argument("--time", default=False, action='store_true')
     args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger("ensembling").setLevel(logging.DEBUG)
 
     main(args)
