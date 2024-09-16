@@ -356,7 +356,7 @@ def main(args):
 
     models = []
     for model_name in args.model_names:
-        models.append(get_model_bundle(model_name, target_language=args.target_lang, device=device, cache=args.cache))
+        models.append(get_model_bundle(model_name, source_language=args.source_lang, target_language=args.target_lang, device=device, cache=args.cache))
 
     if args.noise is not None:
         models[0].logits_processor.append(
