@@ -1,18 +1,10 @@
-The code for ensembling is brewing in `ensemble.py`.
-I (MJP) have copied stub code there which we simply need to extend.
+
 
 ## Test
 
-    echo "This is test." | python ensembling/translate.py
-    - m2m100 -> C'est un test.
-    - nllb-200-distilled-600M -> Il s'agit d'un test.
-
-
-
-    echo "This is a test." | python ensembling/ensemble.py -t fr -m facebook/m2m100_418M facebook/nllb-200-distilled-600M --num-beams 5 -l 10
-    echo "This is a test." | python ensembling/ensemble.py -t fr -m facebook/m2m100_418M facebook/m2m100_1.2B --num-beams 5 -l 10
-
-
+    paste <(echo "This is a test." | ensembling/build/src-tgt "__en__" "__fr__") \
+            <(echo "This is a test." | ensembling/build/src-tgt "eng_Latn" "fra_Latn")
+            | python ensembling/ensemble.py --models facebook/m2m100_418M facebook/nllb-200-distilled-600M -> C'est un test.
 
 ## Setup
 
@@ -21,33 +13,29 @@ Installation:
     python3 -m venv venv
     . venv/bin/activate
     
+We should fill this out with the requirements etc. We also need to add our unit tests here.
 
-Testing:
+## Rachel Changes
 
-    # This will interpolate two identical models (nllb)
-    echo "This is a test." | ensembling/ensemble.py -b 10
+- everything that wasn't used has been removed (extraneous model functions)
+- loading and calls are now model-agnostic (hopefully). Everything is loaded with the `AutoModelWithLMHead` function (apparently this model will soon/eventually be deprecated) and `AutoTokenizer`
+- batch size now works (I would continue to test with batch=1, sensitive to memory issues)
+- I moved a lot of the search code to its own file `search.py` to clear up `ensemble.py` which just handles the high level stuff
+- There's a new function `get_sorted_output_extensions` which handles the logic for what the model produces. Right now that's just either skipping (via pad/stall) or sorting. In the future, if there's more ways to optimize this, we can constrain the search.
+- I exit the search early when there is at least one beam to continue with and the search depth exceeds 10k--this significantly speeds up the model when it gets stuck sometimes
 
-    # This adds noise to the logits of the first model, so interpolotion makes a bit more sense
-    echo "This is a test." | ensembling/ensemble.py -b 10 --noise 2
 
-    # German
-    echo "This is a test." | ensembling/ensemble.py -b 5 -t deu_Latn
 
 ## TODO
-- [x] Ensemble the same model twice (passed in as two models)
+- [ ] Ensemble the same model twice (passed in as two models)
 - [ ] Ensemble two models with a shared vocabulary
-- [x] Build a model bundle class
 - [ ] Ensemble two models with different vocabularies
 - [ ] Add script to convert Marian models to Huggingface
 - [ ] Create a Marian model class for HF (maybe already exists?)
 
-## Generalizing models
 
-We need a number of abstractions to support fully ensembling any model
-
-- models may have different preprocessing (e.g., tokenization)
-- models may required a forced BOS token (e.g., language to select)
-- models may apply post-processing before realizing the target language string (e.g., Marian's casing)
+### Unit Tests
+- [ ] given some output, run it through individual models to get the token level scores
 
 ## Design CLI
 

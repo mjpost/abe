@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os, sys
 import logging
 
@@ -10,161 +9,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ensembling")
 
-import argparse
-from collections import defaultdict
-import heapq
-import torch
-import json
+
 from typing import Optional, Tuple, Union, List, Dict, Any
-from torch import nn, LongTensor
 
-import time
 
-from transformers import (
-    LogitsProcessor,
-    BeamSearchScorer,
-    MaxLengthCriteria,
-)
+from models import get_models, Model
+from utils import Trie
+from search import beam_search, get_pad_beams
 
+import torch
 from transformers.generation.utils import (
     GenerateBeamOutput, 
-    GenerateBeamDecoderOnlyOutput, 
-    GenerateBeamEncoderDecoderOutput,
 )
-from models import get_model_bundle, Bundle
 
-__version__ = "0.1.0"
+import math
+import json
+from collections import defaultdict
 
-class BeamState():
-    def __init__(self, outputs=None, beam_index=0, weights=None):
-        self.outputs = outputs # list of tuples (id, TokenExtension)
-        self.beam_index = beam_index
-        if weights is None:
-            self.weights = [(1.0 / len(outputs)) for _ in range(len(outputs))]
-        else:
-            self.weights = weights
-        self.weighted_score = sum([self.weights[i] * (output[1].score/output[1].hyp_len) for i, output in enumerate(self.outputs)])
-
-    def score(self):
-        return self.weighted_score
-
-    def __str__(self):
-        out_str = f"STATE({self.beam_index})"
-        for output in self.outputs:
-            out_str += f" {output[0]}"
-        return out_str
-    
-    # def __hash__(self):
-    #     return hash((self.outputs, self.beam_index))
-
-    def __lt__(self, other):
-        return self.weighted_score > other.weighted_score
-    
-    # def __gt__(self, other):
-    #     return self.score() > other.score()
-
-    def __eq__(self, other):
-        return self.score == other.score
-
-class TokenExtension():
-    def __init__(self, score, index, token, hyp_len):
-        self.score = score
-        self.index = index
-        self.token = token
-        self.hyp_len = hyp_len
-
-def expand_frontier(bundles, state, paired_outputs, stalled_states):
-    beam_i = state.beam_index
-    stalls = stalled_states[beam_i]
-    neighbors = []
-    for model_i, stall in enumerate(stalls):
-        add = True
-        if not stall:
-            outputs = []
-            for output_i, state_output in enumerate(state.outputs):
-                if model_i == output_i:
-                    next_id = state_output[0] + 1
-                    if next_id < len(paired_outputs[beam_i][model_i][0]):
-                        outputs.append(
-                            (next_id, TokenExtension(score=paired_outputs[beam_i][model_i][0][next_id],
-                                                    index=paired_outputs[beam_i][model_i][1][next_id],
-                                                    token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][next_id]),
-                                                    hyp_len=len(bundles[model_i].decoder_prefixes[beam_i]) + 1))
-                        )
-                    else:
-                        add = False
-                else:
-                    outputs.append(state_output) #??
-            if add:
-                neighbors.append(
-                    BeamState(outputs=outputs, beam_index=beam_i, weights=state.weights)
-                )
-    return neighbors
-
-def compatibility(bundles, next_state):
-    # 0 means compatible and all finished
-    # 1 means compatible
-    # -1 means incompatible
-    num_models = len(bundles)
-    candidate_strings = []
-    for i in range(num_models):
-        candidate_strings.append(bundles[i].extend_beam_string(next_state.beam_index, next_state.outputs[i][1].index))
-    # candidate_strings = [bundles[i].extend_beam_string(next_state.beam_index, next_state.outputs[i][1].index) for i in range(num_models)]
-        
-    string_lengths = [len(candidate_strings[i]) for i in range(num_models)]
-
-    eos_endings = [bundles[i].is_eos(next_state.outputs[i][1].index) for i in range(num_models)]
-
-    max_length = max(string_lengths)
-    min_length = min(string_lengths)
-
-    # if any strings have ended, compatibility must be:
-    # - exactly equal for finished strings
-    # - substring only for unfinished strings
-    if any(eos_endings):
-        finished_strings = [candidate_strings[i] for i in range(num_models) if eos_endings[i]]
-        unfinished_strings = [candidate_strings[i] for i in range(num_models) if not eos_endings[i]]
-        leading_string = finished_strings[0]
-        compatibilities = [leading_string == fin for fin in finished_strings] + [leading_string.startswith(ufin) for ufin in unfinished_strings]
-        if all(compatibilities):
-            if all(eos_endings):
-                return 0, None
-            else:
-                return 1, eos_endings
-        else:
-            return -1, None
-
-    # otherwise, leading string determines compatibility
-    leading_string = candidate_strings[string_lengths.index(max_length)]
-    compatibilities = [leading_string.startswith(candidate_strings[i]) for i in range(num_models)]
-    if all(compatibilities):
-        if max_length == min_length:
-            ret_val = [False for _ in range(num_models)]
-            return 1, ret_val
-        else:
-            ret_val = [l == max_length for l in string_lengths]
-            return 1, ret_val
-    else:
-        return -1, None
-    
-class Hypothesis():
-    def __init__(self, output_ids, scores):
-        self.output_ids = output_ids
-        self.scores = scores
-
-    def score(self):
-        return sum(self.scores) / len(self.scores)
-
-
-@torch.no_grad()
 def ensemble_beam_search(
-        input: str,
-        bundles: List[Bundle],
-        weights: Optional[List[float]] = None,
-        max_steps: Optional[int] = None,
-        num_beams: int = 1,
-        debug=False
-    ) -> Union[GenerateBeamOutput, torch.LongTensor]:
+            batch: List[dict],
+            models: List[Model],
+            weights: List[float],
+            num_beams: int = 5,
+            max_length : int = -1,
+            trie : Trie = None) -> Union[GenerateBeamOutput, torch.LongTensor]:
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
 
@@ -172,270 +40,273 @@ def ensemble_beam_search(
         https://github.com/huggingface/transformers/blob/07e3454f034b4889925621e8e3253547d2a04aa7/src/transformers/generation/utils.py#L2764
     - Beam search support:
         https://github.com/huggingface/transformers/blob/main/src/transformers/generation/beam_search.py
-
-    TODO:
-    - [ ] Generalize to n models  
     """
 
-    num_models = len(bundles)
-    device = bundles[0].model.device
+    num_models = len(models)
+    device = models[0].model.device
+    batch_size = len(batch[0])
+    batch_beam_size = batch_size * num_beams
 
-    batch_size = 1  # len(beam_scorer._beam_hyps)
-
-    start_time = time.time()
-    for bundle in bundles:
+    for model_i, model in enumerate(models):
         # Initialize each model with the input
-        # TODO: maybe this is where the first decoder token should also be set?
-        bundle.set_input(input, num_beams=num_beams, max_length=max_steps)
-
+        model.set_input(batch[model_i], num_beams, max_length)
+    
     # Hypotheses on beams across models are always consistent, but one may be shorter than another.
-    # 0: model 0 has a shorter surface string
-    # 1: model 1 has a shorter surface string
-    # 2: the models are in sync
-    # Calls to a model's topk() are not allowed to select from beam items where that model is ahead
-    stalled_states = [[False for _ in range(num_models)] for __ in range(num_beams)]
+    # We keep track of which model is stalled for any given beam/hypothesis item
+    stalled_states = [[False for _ in range(num_models)] for _ in range(batch_beam_size)]
 
-    beam_completed = []  # contains completed sentences
+    beam_completed = [[] for _ in range(batch_size)]  # contains completed sentences for each batch item
 
-    """
-    # Models: 0 (TM) and 1 (LLM)
-    BEAM 0: [Life is like a box of], [Life is like a box of]    # -> sync state 2
-    BEAM 1: [Life is like a container], [Life is like a cont]   # -> sync state 1 (model 1 is shorter)
-    BEAM 2: [Life is similar to a], [Life is similar to a box]  # -> sync state 0 (model 0 is shorter)
-    """
-    for step_i in range(1, max_steps + 1): # could change to a while true or count the tokens each model has produced
-        # A heap that will store all beam candidates, used to form the next beam.
-        # This will include single-model advances (where one model is behind and is trying to catch up)
-        # and paired-model advances (where both models advanced a compatible token).
-        candidates = [[] for _ in range(num_beams)] # priority queue/heap
-        visited = set() # keeping track of which states get pushed so we don't push the same one many times
+    continue_search = [True for _ in range(batch_size)]
+    step_i = 0
 
-        paired_outputs = defaultdict(lambda: defaultdict(list)) # the list of outputs from each model for each beam
+    while any(continue_search):
+        paired_outputs = defaultdict(lambda: defaultdict(list)) # each beam item has a list of outputs for each model
         cached_steps = []
 
-        # Take the next step of each model
-        for model_i, bundle in enumerate(bundles):
-            step_outputs, next_token_scores = bundle.step(step_i) #perhaps some room for efficiency here--maybe move below if statement?
-            sequence_scores = next_token_scores + bundle.beam_scores[:, None].expand_as(next_token_scores) # k x V
+        # Each model still steps individually
+        for model_i, model in enumerate(models):
 
+            # Right now we step on all items -- even if model is stalled.
+            # TODO: In the future, there may be room for improvement in efficiency here
+            step_outputs, next_token_scores = model.step()
+
+            # Cache the transformer decoder statement for faster decoding
             cached_steps.append(step_outputs)
+            
+            # Some debugging prints
+            logger.debug(f"STEP {step_i} ({type(model.model)}) MODEL {model_i} STALL {stalled_states}")
+            for line in model.get_beam_string(step_i, model_i):
+                logger.debug(line)
 
-            # do top-k selection where the model is behind or synced
-            if args.debug:
-                print("STEP", type(bundle.model), step_i, "MODEL", model_i, "STALL", stalled_states)
-                bundle.print_beam(model_i, step_i)
-
-            for beam_i, beam_expansion in enumerate(sequence_scores):
-                if stalled_states[beam_i][model_i]:
-                    paired_outputs[beam_i][model_i] = torch.tensor([[0], [bundle.tokenizer.pad_token_id]], device=device)
-                else:
-                    paired_outputs[beam_i][model_i] = torch.sort(beam_expansion, descending=True)
+            for beam_i, beam_expansion in enumerate(next_token_scores):
+                paired_outputs[beam_i][model_i] = get_sorted_output_extensions(
+                    stalled_states[beam_i][model_i],
+                    beam_expansion,
+                    model.beam_scores[beam_i],
+                    model.target_tokenizer.pad_token_id,
+                    device=device,
+                    trie=trie
+                )
 
         # All models have stepped. Start search by seeding the heap with the best candidates from each beam
-        for beam_i in range(num_beams):
-            next_state = BeamState(
-                # 0 signifies that this is the 0th index of the beam item
-                # paired_outputs --> beam_i x model_i x scores x token_ids
-                outputs = [
-                    (0, TokenExtension(score=paired_outputs[beam_i][model_i][0][0],
-                                       index=paired_outputs[beam_i][model_i][1][0],
-                                       token=bundles[model_i].id_to_token(paired_outputs[beam_i][model_i][1][0]),
-                                       hyp_len=len(bundles[model_i].decoder_prefixes[beam_i]) + 1))
-                    for model_i in range(num_models)
-                ],
-                beam_index=beam_i,
-                weights=weights
-            )
-            heapq.heappush(candidates[beam_i], next_state)
-            visited.add(str(next_state))
-
-        # Now, we will explore the heap to find the best candidates
         next_beam = []
-        while len(next_beam) < num_beams and len(beam_completed) < num_beams and sum(len(cand) for cand in candidates) > 0:
-            for candidate_heap in candidates:
-                for chance in range(num_beams):
-                    next_state = heapq.heappop(candidate_heap)
+        for batch_i in range(batch_size):
+            if continue_search[batch_i]:
 
-                    # add neighbors regardless of compatibility
-                    for neighbor in expand_frontier(bundles, next_state, paired_outputs, stalled_states):
-                        if str(neighbor) not in visited:
-                            visited.add(str(neighbor))
-                            heapq.heappush(candidate_heap, neighbor)
-
-                    compat_code, next_stall_states = compatibility(bundles, next_state)
-                    if compat_code == 0:
-                        # all models have terminated with eos
-                        beam_completed.append(Hypothesis(
-                            output_ids = [bundles[i].output_ids[next_state.beam_index] for i in range(num_models)],
-                            scores = [next_state.outputs[i][1].score for i in range(num_models)],
-                        ))
-                    elif compat_code == 1:
-                        next_beam.append((next_state, next_stall_states))
-                if step_i == 1:
-                    break
-
-        # trim beam:
-        next_beam = sorted(next_beam, key=lambda x: x[0].score(), reverse=True)[:num_beams]
-
-        if args.debug:
-            print("I COUNT", len(beam_completed), "COMPLETED")
-        if len(beam_completed) >= num_beams:  # you should break if beam_completed[0] < next_beam[0]
-            if args.debug:
-                print("DONE")
-            break
-
-        # end early if the best candidate is worse than the best completed beam
-        if len(beam_completed) > 0 and next_beam[0][0].score() < beam_completed[0].score():
-            break
-
-        for i in range(num_beams):
-            candidates = [next_beam[i][0].outputs[_][1].token for _ in range(num_models)]
-            candidates_strings = " ||| ".join(candidates)
-            if args.debug:
-                print("SELECTED", i, candidates_strings)        
-        # Now, go through and update each model with its selection.
-        # There is a constraint on updating: a model can only update beam items
-        # where the sync state is 2 (both models were already in sync) or where
-        # the sync state is the model number (that model was behind).
-        if args.debug:
-            print(f"VISITED_STATES: {len(visited)}")
-        stalled_states = [[] for _ in range(num_beams)] # beam indexed
-        for i, bundle in enumerate(bundles):
-            beam_indices = [next_beam[j][0].beam_index for j in range(len(next_beam))]
-            beam_tokens = [next_beam[j][0].outputs[i][1].index.item() for j in range(len(next_beam))]
-            beam_scores = [next_beam[j][0].outputs[i][1].score for j in range(len(next_beam))]
-            update_mask = [next_beam[j][1][i] for j in range(len(next_beam))]
-            for j in range(num_beams):
-                stalled_states[j].append(update_mask[j])
-            if args.debug:
-                print("MODEL", i, "STEP", step_i, "UPDATE", beam_indices, beam_tokens, update_mask)
-            bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=cached_steps[i])
-            # bundle.update(beam_indices, beam_tokens, beam_scores, debug=args.debug, step_outputs=None)
-
-
-    # One case where there aren't completed beams is if our max_steps was too short. We must return the beams anyway
-    while len(beam_completed) < num_beams:
-        best_cand = next_beam.pop(0)
-        beam_completed.append(
-                Hypothesis(
-                    output_ids = [bundles[i].output_ids[best_cand[0].beam_index] for i in range(num_models)],
-                    scores = [best_cand[0].outputs[i][1].score for i in range(num_models)],
+                # This is our current best hypothesis. We don't want to continue our search if we every pass this score
+                max_score = max(beam_completed[batch_i]).raw_score() if len(beam_completed[batch_i]) > 0 else -math.inf
+                next_batch_beam, completed_beams = beam_search(
+                    batch_offset = batch_i * num_beams,
+                    num_beams = num_beams,
+                    paired_outputs = paired_outputs,
+                    models = models,
+                    weights = weights,
+                    completed_beams = len(beam_completed[batch_i]),
+                    stalled_states = stalled_states[batch_i * num_beams: (batch_i + 1) * num_beams],
+                    max_length = max_length,
+                    max_score = max_score
                 )
-        )
- 
-    sorted_completions = sorted(beam_completed, key=lambda x: x.score(), reverse=True)
 
-    for i, completed in enumerate(beam_completed):
-        model0_str = bundles[0].tokenizer.decode(completed.output_ids[0], skip_special_tokens=True)
-        scores = completed.scores
-        pair_score = completed.score()
-        if args.debug:
-            print(f"COMPLETED {i}:", model0_str, scores, pair_score)
+                # if the search returned less then the number of beams, there was some early stop criteria
+                # this is either due to a max_length or max_score being reached
+                if len(next_batch_beam) < num_beams:
 
-    best_beam = sorted_completions[0]
-    output_str = bundles[0].tokenizer.decode(best_beam.output_ids[0], skip_special_tokens=True)
-    return output_str, best_beam.score(), time.time()-start_time
+                    # if there are no beams to continue, we have stopped without any valid continuations,
+                    # so we will stop searching on this batch item---whatever is in the completed itmes is the end results
+                    if len(next_batch_beam) == 0:
+                        continue_search[batch_i] = False
+
+                    # Otherwise we need to pad our beam with some empty items to the model is not confused by the smaller beam size
+                    next_batch_beam = get_pad_beams(next_batch_beam, models, batch_i, num_beams, weights)
+                    next_beam.extend(next_batch_beam)
+                    beam_completed[batch_i].extend(completed_beams)
+                    continue
+
+                # If we have any items that have been completed, we need to add them to the completed list
+                beam_completed[batch_i].extend(completed_beams)
+                logger.debug(f"BEAM {batch_i} COMPLETED {len(beam_completed[batch_i])} BEAMS")
+
+                # If we've completed enough beams then we quit searching
+                if len(beam_completed[batch_i]) == num_beams:
+                    continue_search[batch_i] = False
+
+                # or if the best hypothesis is already worse than the worst completed beam
+                if len(beam_completed[batch_i]) > 0 and next_batch_beam[0][0].raw_score() < max(beam_completed[batch_i]).raw_score():
+                    continue_search[batch_i] = False
+
+                for beam_i, beam in enumerate(next_batch_beam):
+                    candidates = [beam[0].outputs[_][1].token for _ in range(num_models)]
+                    candidates_strings = " ||| ".join(candidates)
+                    logger.debug(f"SELECTED {beam_i} {candidates_strings}")
+            else:
+                # if this batch item is done, we need to pad the beam with empty items
+                # this is due to having the batch_beam_size
+                next_batch_beam = get_pad_beams([], models, batch_i, num_beams, weights)
+
+            next_beam.extend(next_batch_beam)
+
+        # after all our batch items have been extended, we'll update the models
+        stalled_states = update_models_with_beams(
+            next_beam,
+            models,
+            cached_steps                
+            )
+        step_i += 1
 
 
-class RandomNoiseLogitsProcessor(LogitsProcessor):
-    def __init__(self, noise):
-        self.noise = noise
+    outputs = []
+    for batch_i, completed in enumerate(beam_completed):
+        sorted_completions = sorted(completed, key=lambda x: x.raw_score(), reverse=True)
+        best_completion = sorted_completions[0]
+        scores = [_.item() for _ in best_completion.scores]
+        combined_score = best_completion.raw_score().item()
+        out_str = models[0].target_tokenizer.decode(best_completion.output_ids[0], skip_special_tokens=True)
+       
+        for model_i, model in enumerate(models):
+            ids = best_completion.output_ids[model_i]
+            tokens = model.target_tokenizer.convert_ids_to_tokens(ids)
+            logger.debug(f"MODEL {model_i}")
+            logger.debug(f"IDS: {ids}")
+            logger.debug(f"TOKS: {tokens}")
 
-    def __call__(self, 
-                 input_ids: LongTensor,
-                 scores: torch.FloatTensor) -> torch.FloatTensor:
-            return scores + torch.randn_like(scores) * self.noise
+        for completion_j, completion in enumerate(sorted_completions):
+            j_out_str = models[0].target_tokenizer.decode(completion.output_ids[0], skip_special_tokens=True)
+            j_scores = [_.item() for _ in completion.scores]
+            j_combined_score = completion.raw_score().item()
+            logger.debug(f"COMPLETION {batch_i} {completion_j} {j_out_str} {j_scores} {j_combined_score}")
+            
+        outputs.append({
+            "sequence": out_str,
+            "scores": scores,
+            "combined_score": combined_score,
+            "token_scores": best_completion.token_scores,
+        })
+
+    return outputs
+
+
+
+def update_models_with_beams(
+        next_beam,
+        models,
+        cached_steps
+):
+    
+    beam_size = len(next_beam)
+    stalled_states = [[] for _ in range(beam_size)]
+    for model_i, model in enumerate(models):
+        beam_indices = [next_beam[beam_j][0].beam_index for beam_j in range(beam_size)]
+        beam_tokens = [next_beam[beam_j][0].outputs[model_i][1].idx.item() for beam_j in range(beam_size)]
+        beam_scores = [next_beam[beam_j][0].outputs[model_i][1].score for beam_j in range(beam_size)]
+        update_mask = [next_beam[beam_j][1][model_i] for beam_j in range(beam_size)]
+        for beam_j in range(beam_size):
+            stalled_states[beam_j].append(update_mask[beam_j])
+        model.update_beam(beam_indices, beam_tokens, beam_scores, step_outputs=cached_steps[model_i])
+    
+    return stalled_states
+
+def get_sorted_output_extensions(
+        stalled,
+        next_token_scores,
+        beam_score,
+        pad_token_id,
+        device : torch.device = torch.device('cpu'),
+        trie: Optional[Trie] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    
+    if stalled:
+        return [[beam_score], torch.tensor([pad_token_id], dtype=torch.long, device=device)]
+    
+    # If a trie was constructed, select the top-k tokens that are in the trie (limits sort and search space)
+    if trie:
+        pass
+
+    # need to somehow expand this
+    return torch.sort(next_token_scores + beam_score, descending=True)
+
+
+
+def batch_generator(istream, batch_size, num_models):
+    batch = [[] for _ in range(num_models)]
+    for line_i, line in enumerate(istream):
+        line = line.split('\t')
+        assert len(line) == num_models, f"Line {line_i} does not have {num_models} columns"
+        for model_i, l in enumerate(line):
+            batch[model_i].append(json.loads(l.strip()))
+        if len(batch[0]) == batch_size:
+            yield batch
+            batch = [[] for _ in range(num_models)]
+    if len(batch[0]) > 0:
+        yield batch
+
+def build_output(output, args):
+    if args.score:
+        return json.dumps(output, ensure_ascii=False)
+    else:
+        return output["sequence"]
+
+def print_output(outputs, args, ostream):
+    for o in outputs:
+        print(build_output(o, args), file=ostream)
 
 
 def main(args):
-
-    # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    device = torch.device('cuda') if torch.cuda.is_available() and not args.cpu else torch.device('cpu')
     logging.debug(f"Using device: {device}")
 
-    models = []
-    for model_name in args.model_names:
-        models.append(get_model_bundle(model_name, target_language=args.target_lang, device=device, cache=args.cache))
+    models = get_models(args.models, device, args.cache)
+    weights = [w / sum(args.weights) for w in args.weights] if args.weights is not None else [1/len(models) for _ in models]
+    trie = Trie() if args.trie else None
 
-    if args.noise is not None:
-        models[0].logits_processor.append(
-            RandomNoiseLogitsProcessor(args.noise)
-        )
+    istream = open(args.input, 'r') if args.input else sys.stdin
 
-    weights = [_ / sum(args.weights) for _ in args.weights] if args.weights is not None else None
-    if weights is not None:
-        if len(weights) != len(models):
-            raise ValueError("Number of weights must match number of models")
+    ostream = open(args.output, 'w') if args.output else sys.stdout
 
-    # istream = ["An activist supporter of Jean-Pierre Chevénement in 2002, he later supported Dominique de Villepin in the district from 2010 to 2011."]
+    batches = batch_generator(istream, args.batch_size, len(models))
 
-    # input_source = ["Between the early 1970s, when the Boeing 747 jumbo defined modern long-haul travel, and the turn of the century, the weight of the average American 40- to 49-year-old male increased by 10 per cent, according to U.S. Health Department Data."]
-
-    # input_source = ['"It really comes down to providing flexibility to airlines and allowing them to do the things that they believe they need to do to be successful," said Boeing cabins expert Kent Craver.']
-
-    # input_source = ["This is a test.", 
-    #                 "this is another test, but it's too long so the model is gonna get stuck before it's able to finish and it won't have enough tokens to generate the eos one."]
-    # input_source = [
-    #     "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs."
-    # ]
-    # input_source = [
-    #     "Jet makers feud over seat width with big orders at stake",
-    #     "A row has flared up between leading plane makers over the width of tourist-class seats on long-distance flights, setting the tone for a bitter confrontation at this month's Dubai Airshow.",
-    #     "The dispute focuses on the width of seats provided on long-haul flights for economy passengers - not always the ones most courted by airlines, but whose allocated space holds the key to efficiency claims for the latest jets offered by Airbus SAS and Boeing Co.",
-    #     "Airbus this week called for an industry standard that would provide for a seat at least 18 inches (46 cm) wide in economy cabins, but its U.S. arch-rival Boeing says it should be for airlines to decide.",
-    #     "The dispute comes as plane makers vie to sell ever-larger versions of their twin-engined long-distance aircraft, with potentially record orders expected at the November 17-21 event.",
-    #     "How the back of the plane is laid out - particularly whether seating is 9 or 10 abreast - is central to the economic performance claims being made for new \"mini-jumbo\" jet designs.",
-    #     "Boeing says its revamped \"777X\" will hold 406 people based on economy seats more than 17 inches wide and set out 10 in each row.",
-    #     "Airbus says the competing version of its A350 will carry 350 people in 18-inch-wide economy seat laid out 9 abreast.",
-    #     "Plane giants often trade blows on technical matters through advertising in the trade press.",
-    #     "Now, Airbus is appealing directly to the public ahead of the Dubai Airshow, where the 777X is expected to dominate with more than 100 orders."
-    # ]
-    istream = sys.stdin if args.input is None else open(args.input, "r")
-
-    for line in istream:
-    # for line in input_source:
-        line = line.rstrip()
-
-        # normally you would now call beam search, but we need to implement it
-        outputs = ensemble_beam_search(line, 
-                                       models, 
-                                       num_beams=args.num_beams, 
-                                       max_steps=args.max_steps, 
-                                       weights=weights,
-                                       debug=args.debug)
-        output_string = build_output_string(args, outputs)
-        print(output_string)
-
-def build_output_string(args, output):
-    out = ""
-    if args.debug:
-        out += f"PPL: {output[1]}\t"
-    if args.time:
-        out += f"TIME: {output[2]}\t"
-    out += f"{output[0]}"
-    return out
+    for batch in batches:
+        outputs = ensemble_beam_search(
+                    batch,
+                    models,
+                    weights,
+                    num_beams=args.num_beams,
+                    max_length=args.max_length,
+                    trie=trie)
+        print_output(outputs, args, ostream)
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", "-i", default=None, type=str, help="Input stream")
-    parser.add_argument("--model-names", "-m", type=str, nargs="+", default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"], help="Model names")
-    parser.add_argument("--weights", default=None, type=float, nargs="+", help="Weights for each model")
-    parser.add_argument("--cpu", action="store_true", default=False)
-    parser.add_argument("--source-lang", "-s", type=str, default="en", help="Source language")
-    parser.add_argument("--input_file_path", type = str, default = "./input_data/en.json", help="Input file path")
-    parser.add_argument("--target-lang", "-t", type=str, default="fr", help="Target language")
-    parser.add_argument("--num-beams", "-b", type=int, default=4, help="Number of beams for beam search")
-    parser.add_argument("--noise", "-n", type=float, default=None, help="Add noise to final model logits")
-    parser.add_argument("--max-steps", "-l", type=int, default=30, help="Maximum number of output tokens")
-    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--debug", default=False, action="store_true")
-    parser.add_argument("--cache", default=False, action='store_true')
-    parser.add_argument("--time", default=False, action='store_true')
+
+    parser = argparse.ArgumentParser(description='Ensemble models')
+    
+    parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default=None)
+    parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout', default=None)
+
+    parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"])
+    parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')
+
+    parser.add_argument("--num-beams", '-b', type=int, help='Number of beams for beam search', default=5)
+    parser.add_argument("--batch-size", '-t', type=int, help='Batch size for inference', default=1)
+    parser.add_argument("--max-length", '-l', type=int, help='Maximum length of the output', default=100)
+    parser.add_argument("--score", '-s', action='store_true', help='Output the score of each model')
+
+    parser.add_argument("--trie", default=False, action='store_true', help='Use trie for finding extensions')
+
+    parser.add_argument("--cpu", '-c', action='store_true', help='Use CPU instead of GPU')
+    parser.add_argument("--cache", '-a', action='store_true', help='Cache the models')
+
+    parser.add_argument("--debug", '-d', action='store_true', help='Debug mode')
+
     args = parser.parse_args()
+
 
     if args.debug:
         logging.getLogger("ensembling").setLevel(logging.DEBUG)
+
+    if args.weights is not None:
+        assert len(args.models) == len(args.weights), "Number of models and weights must be the same"
+        assert all([w >= 0 for w in args.weights]), "Weights must be non-negative"
+    assert args.num_beams > 0, "Number of beams must be positive"
+    assert args.batch_size > 0, "Batch size must be positive"
 
     main(args)
