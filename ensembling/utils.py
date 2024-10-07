@@ -71,6 +71,7 @@ def tokenize(tokenizer, bos_tokens=None, inputs=None):
             sys.exit(-1)
         logger.debug(f"ids for BOS: {out}")
     if inputs is not None:
-        out += tokenizer.convert_tokens_to_ids(tokenizer.tokenize(inputs) + [tokenizer.eos_token])
-        logger.debug(f"Tokenized input: {inputs}")
+        tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(inputs) + [tokenizer.eos_token])
+        out += tokens
+        logger.debug(f"Tokenized input: {tokens}")
     return out

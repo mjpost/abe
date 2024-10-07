@@ -123,19 +123,8 @@ class Model:
 
                 # BOS tokens are *already* tokenized special ids
                 # There may be a variant of this going forward where we pass the ids instead
-                # tokenize(self.source_tokenizer, bos_tokens=item.get('encoder_bos_tokens', None), inputs=item.get('encoder_inputs', None))
-                if "encoder_bos_tokens" in item:
-                    bos_tokens[batch_i] += self.source_tokenizer.convert_tokens_to_ids(item['encoder_bos_tokens'])
-                    if self.source_tokenizer.unk_token_id in bos_tokens:
-                        logger.error(f"UNK token found in BOS tokens for batch {batch_i}")
-                        sys.exit(-1)
-                    logger.debug(f"ids for Encoder BOS: {bos_tokens[batch_i]}")
-
-                # Then this would be the input itself. If this is empty then it's just conditioned on the bos tokens
-                if "encoder_inputs" in item:
-                    tokenized_input = self.source_tokenizer.tokenize(item['encoder_inputs']) + [self.source_tokenizer.eos_token]
-                    logger.debug(f"Tokenized encoder input: {tokenized_input}")
-                    bos_tokens[batch_i] += self.source_tokenizer.convert_tokens_to_ids(tokenized_input)
+                logger.debug(f"Tokenizing encoder inputs for batch {batch_i}")
+                bos_tokens[batch_i] = tokenize(self.source_tokenizer, bos_tokens=item.get('encoder_bos_tokens', None), inputs=item.get('encoder_inputs', None))
 
                 # You must pass either BOS tokens or encoder inputs
                 assert len(bos_tokens[batch_i]) > 0, "No encoder inputs provided"
@@ -181,19 +170,9 @@ class Model:
         # Or it could be the target language token for multilingual MT systems
         # It follows the same structure as the encoder inputs
         for batch_i, item in enumerate(batch):
-            bos_tokens = []
-            if 'decoder_bos_tokens' in item:
-                bos_tokens += self.target_tokenizer.convert_tokens_to_ids(item['decoder_bos_tokens'])
-                if self.target_tokenizer.unk_token_id in bos_tokens:
-                    logger.error(f"UNK token found in BOS tokens for batch {batch_i}")
-                    sys.exit(-1)
-                logger.debug(f"ids for Decoder BOS: {bos_tokens}")
-            # Then this would be the input itself. If this is empty then it's just conditioned on the bos tokens
-            if "decoder_inputs" in item:
-                decoder_tokens = self.target_tokenizer.tokenize(item['decoder_inputs'])
-                bos_tokens += self.target_tokenizer(decoder_tokens).input_ids
-                logger.debug(f"Tokenized decoder input: {decoder_tokens}")
 
+            logger.debug(f"Tokenizing decoder inputs for batch {batch_i}")
+            bos_tokens = tokenize(self.target_tokenizer, bos_tokens=item.get('decoder_bos_tokens', None), inputs=item.get('decoder_inputs', None))
             logger.debug(f"Decoder inputs: {bos_tokens}")
             # We must initialize each beam for each item in the batch
             offset = batch_i * self.num_beams

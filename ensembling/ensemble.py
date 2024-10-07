@@ -160,6 +160,7 @@ def ensemble_beam_search(
         sorted_completions = sorted(completed, key=lambda x: x.raw_score(), reverse=True)
         best_completion = sorted_completions[0]
         scores = [_.item() for _ in best_completion.scores]
+        output_tokens = [model.target_tokenizer.convert_ids_to_tokens(best_completion.output_ids[model_i]) for model_i, model in enumerate(models)]
         combined_score = best_completion.raw_score().item()
         out_str = models[0].target_tokenizer.decode(best_completion.output_ids[0], skip_special_tokens=True)
        
@@ -181,6 +182,8 @@ def ensemble_beam_search(
             "scores": scores,
             "combined_score": combined_score,
             "token_scores": best_completion.token_scores,
+            "tokens": output_tokens,
+            "token_ids": best_completion.output_ids
         })
 
     return outputs
