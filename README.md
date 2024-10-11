@@ -3,7 +3,7 @@
 ## Test
 
     paste <(echo "This is a test." | ensembling/build/src-tgt "__en__" "__fr__") \
-            <(echo "This is a test." | ensembling/build/src-tgt "eng_Latn" "fra_Latn")
+            <(echo "This is a test." | ensembling/build/src-tgt "eng_Latn" "fra_Latn") \
             | python ensembling/ensemble.py --models facebook/m2m100_418M facebook/nllb-200-distilled-600M -> C'est un test.
 
 ## Setup

@@ -55,7 +55,7 @@ class Model:
         self.target_tokenizer = target_tokenizer
         self.model = model
 
-        self.model_kwargs = self.model.config
+        self.model_kwargs = self.model.config # self.model_kwargs.attr vs self.model_kwargs['attr]
         self.model_kwargs.update(kwargs)
         self.model_kwargs.use_cache = cache
 

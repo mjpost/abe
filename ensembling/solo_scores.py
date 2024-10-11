@@ -11,8 +11,8 @@ def load_model(model_name, device):
     return model.eval().to(device)
 
 def get_scores(line, model, device=torch.device('cpu')):
-    encoder_input = torch.tensor([line["inputs"]]).to(device)
-    decoder_input = torch.tensor([line["outputs"]]).to(device)
+    encoder_input = torch.tensor([line["inputs"]]).to(device) # token ids
+    decoder_input = torch.tensor([line["outputs"]]).to(device) # token ids
 
     outputs = model(input_ids=encoder_input, decoder_input_ids=decoder_input).logits[0]
     outputs = torch.nn.functional.log_softmax(outputs, dim=-1)

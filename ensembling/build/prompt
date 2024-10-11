@@ -1,0 +1,2 @@
+# ensembling/build/prompt "Translate the following sentence from English to French:"
+# wmt14 {"decoder_inputs": Translate the following sentence from English to French: ```Jet makers feud over seat width with big orders at stake```}

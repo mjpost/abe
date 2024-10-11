@@ -198,9 +198,6 @@ def beam_search(
                 visited.add(hash(neighbor))
                 heapq.heappush(candidates, neighbor)
 
-        if next_state.outputs[0][1].idx.item() == 22:
-            pass
-
         
         compat_code, next_stall_states = compatibility(models, next_state)
 
