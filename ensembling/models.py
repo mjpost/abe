@@ -131,8 +131,8 @@ class Model:
 
             # pack and pad these encoder inputs
             logger.debug(f"Encoder inputs: {bos_tokens}")
-            input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.source_tokenizer.pad_token_id)
-            input_ids = input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
+            self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.source_tokenizer.pad_token_id)  
+            input_ids = self.input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
             encoder_attention_mask = (input_ids != self.pad_token_id).int().to(self.device)
             self.encoder_outputs = self.model.get_encoder()(
                 input_ids,

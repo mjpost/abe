@@ -176,14 +176,19 @@ def ensemble_beam_search(
             j_scores = [_.item() for _ in completion.scores]
             j_combined_score = completion.raw_score().item()
             logger.debug(f"COMPLETION {batch_i} {completion_j} {j_out_str} {j_scores} {j_combined_score}")
-            
+
+
+        input_ids = [model.input_ids[batch_i].tolist() for model in models]
+        
         outputs.append({
+            "input_ids": input_ids,
             "sequence": out_str,
             "scores": scores,
             "combined_score": combined_score,
             "token_scores": best_completion.token_scores,
             "tokens": output_tokens,
-            "token_ids": best_completion.output_ids
+            "token_ids": best_completion.output_ids,
+            "weights": weights
         })
 
     return outputs
@@ -253,7 +258,7 @@ def print_output(outputs, args, ostream):
         print(build_output(o, args), file=ostream)
 
 
-def main(args):
+def ensemble_models(args):
     device = torch.device('cuda') if torch.cuda.is_available() and not args.cpu else torch.device('cpu')
     logging.debug(f"Using device: {device}")
 
@@ -266,8 +271,13 @@ def main(args):
     ostream = open(args.output, 'w') if args.output else sys.stdout
 
     batches = batch_generator(istream, args.batch_size, len(models))
+   
 
-    for batch in batches:
+    
+
+    
+    outputs_formatted = [[] for i in range(7)]
+    for i, batch in enumerate(batches):
         outputs = ensemble_beam_search(
                     batch,
                     models,
@@ -276,14 +286,25 @@ def main(args):
                     max_length=args.max_length,
                     trie=trie)
         print_output(outputs, args, ostream)
+        
+        outputs_formatted[i] = outputs
+        
+    
+
+    
+    with open(args.output+'.jsonl', 'w', encoding='utf8') as file:
+        for line in outputs_formatted:
+            json.dump(line[0], file, ensure_ascii=False)
+            file.write('\n')
+        
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Ensemble models')
     
-    parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default=None)
-    parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout', default=None)
+    parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default='input-test')
+    parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout', default='output-test')
 
     parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"])
     parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')
@@ -312,4 +333,14 @@ if __name__ == "__main__":
     assert args.num_beams > 0, "Number of beams must be positive"
     assert args.batch_size > 0, "Batch size must be positive"
 
-    main(args)
+    ensemble_models(args)
+
+
+
+    
+    
+
+    
+    
+    
+    
