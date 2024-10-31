@@ -1,0 +1,4 @@
+/nfshomes/kravisan/miniconda3/lib/python3.12/site-packages/transformers/models/auto/modeling_auto.py:1748: FutureWarning: The class `AutoModelWithLMHead` is deprecated and will be removed in a future version. Please use `AutoModelForCausalLM` for causal language models, `AutoModelForMaskedLM` for masked language models and `AutoModelForSeq2SeqLM` for encoder-decoder models.
+  warnings.warn(
+/nfshomes/kravisan/miniconda3/lib/python3.12/site-packages/transformers/models/auto/modeling_auto.py:1748: FutureWarning: The class `AutoModelWithLMHead` is deprecated and will be removed in a future version. Please use `AutoModelForCausalLM` for causal language models, `AutoModelForMaskedLM` for masked language models and `AutoModelForSeq2SeqLM` for encoder-decoder models.
+  warnings.warn(

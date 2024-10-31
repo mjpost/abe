@@ -275,8 +275,10 @@ def ensemble_models(args):
 
     
 
-    
-    outputs_formatted = [[] for i in range(7)]
+    with open(args.input, 'r') as file:
+        length = sum(1 for line in file)
+
+    outputs_formatted = [[] for i in range(length)]
     for i, batch in enumerate(batches):
         outputs = ensemble_beam_search(
                     batch,
@@ -304,7 +306,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Ensemble models')
     
     parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default='input-test')
-    parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout', default='output-test')
+    parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout')
 
     parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"])
     parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')

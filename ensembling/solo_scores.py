@@ -8,21 +8,20 @@ from transformers import AutoModelWithLMHead
 import subprocess
 
 def load_model(model_name, device):
-    model = AutoModelWithLMHead.from_pretrained(model_name)
-    return model.eval().to(device)
+    model = AutoModelWithLMHead.from_pretrained(model_name).to(device)
+    return model.eval()
 
 def get_scores(line, device=torch.device('cpu')):
     encoder_inputs = line["input_ids"] # token ids
     decoder_inputs = line["token_ids"] # token ids
-
+    #print(encoder_inputs)
+    #print(decoder_inputs)
     token_scores_dict = {0: [], 1: []}
     for i in range(len(encoder_inputs)):
-        print("Model", args.models[i])
-        model = AutoModelWithLMHead.from_pretrained(args.models[i])
+        #print("Model", args.models[i])
+        model = AutoModelWithLMHead.from_pretrained(args.models[i]).to(device)
         input_ids = torch.tensor(encoder_inputs[i]).unsqueeze(0).to(device)
-        
         decoder_input_ids = torch.tensor(decoder_inputs[i]).unsqueeze(0).to(device)
-        
 
         outputs = model(input_ids=input_ids, decoder_input_ids=decoder_input_ids).logits[0]
         outputs = torch.nn.functional.log_softmax(outputs, dim=-1)
@@ -35,7 +34,7 @@ def get_scores(line, device=torch.device('cpu')):
     return token_scores_dict
 
 def main(args):
-    device = torch.device('cuda') if torch.cuda.is_available() and not args.cpu else torch.device('cpu')
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     istream = open(args.input, "r") if args.input is not None else sys.stdin
     ostream = open(args.output, "w") if args.output is not None else sys.stdout
 
@@ -46,9 +45,9 @@ def main(args):
         weights = line['weights']
         ensemble_score_calculated = sum([weights[i] * sequence_scores[i] for i in range(len(sequence_scores))])
         if abs(ensemble_score_calculated - line['combined_score']) > 0.01:
-            print("Ensemble score mismatch", ensemble_score_calculated, line['combined_score'])
+            print("Ensemble score mismatch: ",line,abs(ensemble_score_calculated-line['combined_score']))
         else:
-            print("Ensemble score matched", abs(ensemble_score_calculated-line['combined_score']))
+            print("Ensemble score matched:", abs(ensemble_score_calculated-line['combined_score']))
     
 
 if __name__ == "__main__":
