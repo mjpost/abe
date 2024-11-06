@@ -80,11 +80,23 @@ def ensemble_beam_search(
                 logger.debug(line)
 
             for beam_i, beam_expansion in enumerate(next_token_scores):
+                if model.target_tokenizer.pad_token_id:
+                    pad_token_id = model.target_tokenizer.pad_token_id
+                else:
+                    pad_token_id = model.target_tokenizer.eos_token_id
+                # paired_outputs[beam_i][model_i] = get_sorted_output_extensions(
+                #     stalled_states[beam_i][model_i],
+                #     beam_expansion,
+                #     model.beam_scores[beam_i],
+                #     model.target_tokenizer.pad_token_id,
+                #     device=device,
+                #     trie=trie
+                # )
                 paired_outputs[beam_i][model_i] = get_sorted_output_extensions(
                     stalled_states[beam_i][model_i],
                     beam_expansion,
                     model.beam_scores[beam_i],
-                    model.target_tokenizer.pad_token_id,
+                    pad_token_id,
                     device=device,
                     trie=trie
                 )
@@ -176,7 +188,6 @@ def ensemble_beam_search(
             j_scores = [_.item() for _ in completion.scores]
             j_combined_score = completion.raw_score().item()
             logger.debug(f"COMPLETION {batch_i} {completion_j} {j_out_str} {j_scores} {j_combined_score}")
-
 
         input_ids = [model.input_ids[batch_i].tolist() for model in models]
         
@@ -294,7 +305,7 @@ def ensemble_models(args):
     
     with open(args.output+'.jsonl', 'w', encoding='utf8') as file:
         for line in outputs_formatted:
-            json.dump(line[0], file, ensure_ascii=False)
+            json.dump(line, file, ensure_ascii=False)
             file.write('\n')
         
 

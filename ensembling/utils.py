@@ -66,7 +66,7 @@ def tokenize(tokenizer, bos_tokens=None, inputs=None):
     out = []
     if bos_tokens is not None:
         out += tokenizer.convert_tokens_to_ids(bos_tokens)
-        if tokenizer.unk_token_id in out:
+        if tokenizer.bos_token_id not in out and tokenizer.unk_token_id in out:
             logger.error(f"UNK token found in BOS tokens")
             sys.exit(-1)
         logger.debug(f"ids for BOS: {out}")

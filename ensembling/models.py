@@ -146,6 +146,10 @@ class Model:
             self.model_kwargs.attention_mask = encoder_attention_mask
             self.encoder_attentions = self.encoder_outputs['attentions']
             self.encoder_hidden_states = (self.encoder_outputs['hidden_states'])
+        else:
+            bos_tokens = [[self.model.config.bos_token_id] for _ in batch]
+            self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.model.config.pad_token_id)  
+            input_ids = self.input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
 
         # Now we set up the rest of the model and the decoder
         self.batch_size = len(batch)
@@ -161,7 +165,14 @@ class Model:
         self.beam_token_scores = [[] for _ in range(self.batch_beam_size)]
         
         # self.output_ids = torch.ones((self.batch_beam_size, 1), device=self.device, dtype=torch.long) * self.model.config.decoder_start_token_id
-        self.decoder_tokens = [[self.model.config.decoder_start_token_id] for _ in range(self.batch_beam_size)]
+        
+        if self.is_encoder_decoder:
+            start_token_id = self.model.config.decoder_start_token_id
+        else:
+            start_token_id = self.model.config.bos_token_id
+        
+        self.decoder_tokens = [[start_token_id] for _ in range(self.batch_beam_size)]
+        
         self.generated_tokens = [[] for _ in range(self.batch_beam_size)]
 
 
@@ -178,9 +189,14 @@ class Model:
             offset = batch_i * self.num_beams
             for beam_j in range(self.num_beams):
                 self.decoder_tokens[offset + beam_j] += bos_tokens
-
+                
         # Eventually we may need to figure out if left padding vs right padding is meaningful
-        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.model.config.pad_token_id).to(self.device)
+        if self.model.config.pad_token_id:
+            padding_value = self.model.config.pad_token_id
+        else:
+            padding_value = self.model.config.eos_token_id
+
+        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=padding_value).to(self.device)
 
 
     def step(self):
@@ -195,7 +211,16 @@ class Model:
         # torch.arange will create a index for each batch index position
         # then we select the last non pad item in each sequence
         # last item is length of sequence -1 to account for 0-indexing
-        next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['decoder_input_ids'] != self.pad_token_id).sum(dim=1)-1)]
+        
+        # To make the code look better, I changed self.pad_token_id (which is self.target_tokenizer.pad_token_id) to padding_value (which is self.model.config.pad_token_id)
+        if self.model.config.pad_token_id:
+            padding_value = self.model.config.pad_token_id
+        else:
+            padding_value = self.model.config.eos_token_id
+        if self.is_encoder_decoder:
+            next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['decoder_input_ids'] != padding_value).sum(dim=1)-1)]
+        else:
+            next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['input_ids'] != padding_value).sum(dim=1)-1)]
 
         # Massage the logits. This is how prefix decoding is enforced.
         next_token_logits[:, self.bad_words] = -float("inf")
@@ -241,7 +266,12 @@ class Model:
         self.decoder_tokens = next_beam_tokens
         self.generated_tokens = next_generated_tokens
         self.beam_token_scores = next_token_scores
-        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.model.config.pad_token_id).to(self.device)
+        
+        if self.model.config.pad_token_id:
+            padding_value = self.model.config.pad_token_id
+        else:
+            padding_value = self.model.config.eos_token_id
+        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=padding_value).to(self.device)
 
         # This is where we'll save the state values for caching
         # Truncation is a hacky solution to not having generation beams being the same length
@@ -291,19 +321,33 @@ class Model:
                 remove_prefix_length = decoder_input_ids.shape[1] - 1
 
             decoder_input_ids = decoder_input_ids[:, remove_prefix_length:]
-
-        return {
-            "input_ids": None,  # encoder_outputs is defined. input_ids not needed
-            "encoder_outputs": encoder_outputs,
-            "past_key_values": past_key_values,
-            "decoder_input_ids": decoder_input_ids,
-            "attention_mask": attention_mask,
-            "decoder_attention_mask": (self.output_ids != self.pad_token_id).int().to(self.device),
-            "head_mask": head_mask,
-            "decoder_head_mask": decoder_head_mask,
-            "cross_attn_head_mask": cross_attn_head_mask,
-            "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
-        }
+        
+        if self.pad_token_id:
+            decoder_attention_mask = (self.output_ids != self.pad_token_id).int().to(self.device)
+        else:
+            decoder_attention_mask = (self.output_ids != self.model.config.eos_token_id).int().to(self.device)
+            
+        if self.is_encoder_decoder:
+            return {
+                "input_ids": None,  # encoder_outputs is defined. input_ids not needed
+                "encoder_outputs": encoder_outputs,
+                "past_key_values": past_key_values,
+                "decoder_input_ids": decoder_input_ids,
+                "attention_mask": attention_mask,
+                "decoder_attention_mask": decoder_attention_mask,
+                "head_mask": head_mask,
+                "decoder_head_mask": decoder_head_mask,
+                "cross_attn_head_mask": cross_attn_head_mask,
+                "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
+            }
+        else:
+            return {
+                "input_ids": self.output_ids,  # encoder_outputs is defined. input_ids not needed
+                "past_key_values": past_key_values,
+                "attention_mask": decoder_attention_mask,
+                "head_mask": decoder_head_mask,
+                "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
+            }
     
     def is_eos(self, token):
         return int(token) in self.eos_token_ids
