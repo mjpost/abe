@@ -308,7 +308,7 @@ if __name__ == "__main__":
     parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default='input-test')
     parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout')
 
-    parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"])
+    parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/m2m100_418M","facebook/nllb-200-distilled-600M"])
     parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')
 
     parser.add_argument("--num-beams", '-b', type=int, help='Number of beams for beam search', default=5)
