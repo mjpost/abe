@@ -185,11 +185,11 @@ def beam_search(
         next_state = heapq.heappop(candidates)
 
         if next_state.raw_score() < max_score:
-            logger.debug(f"Search is stopping early because the score is too low: {next_state.raw_score} compared to best hypothesis {max_score}")
+            logger.debug(f"Search is stopping early because the score is too low: {next_state.raw_score()} compared to best hypothesis {max_score}")
             return next_beam, beam_completed
         
         if len(beam_completed) > 0 and next_state.raw_score() < beam_completed[0].raw_score():
-            logger.debug(f"Search is stopping early because the score is too low: {next_state.raw_score} compared to best hypothesis {beam_completed[0].raw_score()}")
+            logger.debug(f"Search is stopping early because the score is too low: {next_state.raw_score()} compared to best hypothesis {beam_completed[0].raw_score()}")
             return next_beam, beam_completed
 
         # add neighbors regardless of compatibility

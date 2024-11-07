@@ -189,7 +189,7 @@ def ensemble_beam_search(
             j_combined_score = completion.raw_score().item()
             logger.debug(f"COMPLETION {batch_i} {completion_j} {j_out_str} {j_scores} {j_combined_score}")
 
-        input_ids = [model.input_ids[batch_i].tolist() for model in models]
+        input_ids = [model.input_ids[batch_i].tolist() for model in models if model.is_encoder_decoder]
         
         outputs.append({
             "input_ids": input_ids,

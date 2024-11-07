@@ -150,10 +150,10 @@ class Model:
             self.model_kwargs.attention_mask = encoder_attention_mask
             self.encoder_attentions = self.encoder_outputs['attentions']
             self.encoder_hidden_states = (self.encoder_outputs['hidden_states'])
-        else:
-            bos_tokens = [[self.model.config.bos_token_id] for _ in batch]
-            self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.model.config.pad_token_id)  
-            input_ids = self.input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
+        # else:
+        #     bos_tokens = [[self.model.config.bos_token_id] for _ in batch]
+        #     self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.model.config.pad_token_id)  
+        #     input_ids = self.input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
 
         # Now we set up the rest of the model and the decoder
         self.batch_size = len(batch)
@@ -167,14 +167,8 @@ class Model:
         # Flatten so beams are in batch_beam format
         self.beam_scores = self.beam_scores.view((self.batch_size * num_beams,))
         self.beam_token_scores = [[] for _ in range(self.batch_beam_size)]
-        
-        # self.output_ids = torch.ones((self.batch_beam_size, 1), device=self.device, dtype=torch.long) * self.model.config.decoder_start_token_id
-        
-        if self.is_encoder_decoder:
-            start_token_id = self.model.config.decoder_start_token_id
-        else:
-            start_token_id = self.model.config.bos_token_id
-        
+                
+        start_token_id = self.model.config.decoder_start_token_id if self.is_encoder_decoder else self.model.config.bos_token_id
         self.decoder_tokens = [[start_token_id] for _ in range(self.batch_beam_size)]
         
         self.generated_tokens = [[] for _ in range(self.batch_beam_size)]
@@ -195,10 +189,7 @@ class Model:
                 self.decoder_tokens[offset + beam_j] += bos_tokens
                 
         # Eventually we may need to figure out if left padding vs right padding is meaningful
-        if self.model.config.pad_token_id:
-            padding_value = self.model.config.pad_token_id
-        else:
-            padding_value = self.model.config.eos_token_id
+        padding_value = self.pad_token_id
 
         self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=padding_value).to(self.device)
 
