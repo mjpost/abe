@@ -20,11 +20,13 @@ english_inputs = load_input("eng_Latn.devtest")
 translations = load_translations(["fra_Latn_M2M418.devtest", "fra_Latn_NLLB600.devtest"])
 
 matched_english_inputs = []
+matched_french_outputs = []
 for i in range(len(translations[0])):
     if translations[0][i] == translations[1][i]:
         #print("Matched")
         #print(translations[0][i], translations[1][i])
         matched_english_inputs.append(english_inputs[i])
+        matched_french_outputs.append(translations[0][i])
 
 '''
 Export matched_english_inputs to a file
@@ -34,4 +36,9 @@ with open("matched_english_inputs", "w") as f:
     for line in matched_english_inputs:
         f.write(line + "\n")
     f.close()
-    
+
+with open("matched_french_outputs", "w") as f:
+    for line in matched_french_outputs:
+        f.write(line + "\n")
+    f.close()
+
