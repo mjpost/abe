@@ -13,7 +13,7 @@ logger = logging.getLogger("ensembling")
 from typing import Any, Dict, Optional, Union, List
 import copy
 
-from transformers import AutoTokenizer, AutoModelWithLMHead
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig, AutoModelForCausalLM
 
 from transformers.generation.utils import (
     ModelOutput,
@@ -30,9 +30,13 @@ def get_models(model_names, device, cache):
     for model_i, model_name in enumerate(model_names):
         print(f"Instantiating model {model_name}", file=sys.stderr)
         try:
+            config = AutoConfig.from_pretrained(model_name)
             source_tokenizer = AutoTokenizer.from_pretrained(model_name)
             target_tokenizer = AutoTokenizer.from_pretrained(model_name)
-            model = AutoModelWithLMHead.from_pretrained(model_name)
+            if config.is_encoder_decoder:
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+            else:
+                model = AutoModelForCausalLM.from_pretrained(model_name)
         except Exception as e:
             logger.error(f"Error instantiating model {model_name}: {e}")
             sys.exit(-1)

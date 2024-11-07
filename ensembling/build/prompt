@@ -1,2 +1,14 @@
+#!/usr/bin/env python
+
 # ensembling/build/prompt "Translate the following sentence from English to French:"
 # wmt14 {"decoder_inputs": Translate the following sentence from English to French: ```Jet makers feud over seat width with big orders at stake```}
+
+import sys
+import json
+
+prompt=sys.argv[1]
+
+for line in sys.stdin:
+    print(json.dumps({
+        "decoder_inputs": f"{prompt}{line.strip()}"
+    }))
