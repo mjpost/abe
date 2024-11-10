@@ -98,7 +98,8 @@ def ensemble_beam_search(
                     model.beam_scores[beam_i],
                     pad_token_id,
                     device=device,
-                    trie=trie
+                    trie=trie,
+                    model=model
                 )
 
         # All models have stepped. Start search by seeding the heap with the best candidates from each beam
@@ -231,7 +232,8 @@ def get_sorted_output_extensions(
         beam_score,
         pad_token_id,
         device : torch.device = torch.device('cpu'),
-        trie: Optional[Trie] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        trie: Optional[Trie] = None,
+        model: Model = None) -> Tuple[torch.Tensor, torch.Tensor]:
     
     if stalled:
         return [[beam_score], torch.tensor([pad_token_id], dtype=torch.long, device=device)]
@@ -278,16 +280,10 @@ def ensemble_models(args):
     trie = Trie() if args.trie else None
 
     istream = open(args.input, 'r') if args.input else sys.stdin
-
     ostream = open(args.output, 'w') if args.output else sys.stdout
 
     batches = batch_generator(istream, args.batch_size, len(models))
-   
-
     
-
-    
-    outputs_formatted = [[] for i in range(7)]
     for i, batch in enumerate(batches):
         outputs = ensemble_beam_search(
                     batch,
@@ -298,24 +294,14 @@ def ensemble_models(args):
                     trie=trie)
         print_output(outputs, args, ostream)
         
-        outputs_formatted[i] = outputs
-        
-    
-
-    
-    with open(args.output+'.jsonl', 'w', encoding='utf8') as file:
-        for line in outputs_formatted:
-            json.dump(line, file, ensure_ascii=False)
-            file.write('\n')
-        
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Ensemble models')
     
-    parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default='input-test')
-    parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout', default='output-test')
+    parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default=None)
+    parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout', default=None)
 
     parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"])
     parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')
