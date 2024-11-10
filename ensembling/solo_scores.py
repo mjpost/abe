@@ -11,28 +11,30 @@ def load_model(model_name, device):
     model = AutoModelWithLMHead.from_pretrained(model_name)
     return model.eval().to(device)
 
-def get_scores(line, device=torch.device('cpu')):
-    encoder_inputs = line["input_ids"] # token ids
-    decoder_inputs = line["token_ids"] # token ids
+def get_scores(line, model, bad_words, device=torch.device('cpu')):
+    encoder_input = torch.tensor([line["input_ids"]]).to(device) # token ids
+    decoder_input = torch.tensor([line["output_ids"]]).to(device) # token ids
 
-    token_scores_dict = {0: [], 1: []}
-    for i in range(len(encoder_inputs)):
-        print("Model", args.models[i])
-        model = AutoModelWithLMHead.from_pretrained(args.models[i])
-        input_ids = torch.tensor(encoder_inputs[i]).unsqueeze(0).to(device)
+    all_logits = []
+    for i in range(decoder_input.shape[-1]-1):
+        outputs = model(
+                        input_ids=encoder_input,
+                        decoder_input_ids=decoder_input[:, :i+1],
+                        return_dict=True,
+                        output_hidden_states=True)
+        logits = outputs.logits[0]
+        logits[:, bad_words] = -float("inf")
+        logits = torch.nn.functional.log_softmax(logits, dim=-1)[-1]
+        all_logits.append(
+             logits[decoder_input[0, i+1]].item()
+        )
         
-        decoder_input_ids = torch.tensor(decoder_inputs[i]).unsqueeze(0).to(device)
-        
+    # token_scores = []
+    # for id, logit in zip(decoder_input[0][1:], all_logits):
+    #     token_scores.append(logit[id].item())
 
-        outputs = model(input_ids=input_ids, decoder_input_ids=decoder_input_ids).logits[0]
-        outputs = torch.nn.functional.log_softmax(outputs, dim=-1)
+    return all_logits
 
-        token_scores = []
-        for id, logits in zip(decoder_input_ids[0][1:], outputs[:-1]):
-            token_scores.append(logits[id].item())
-        
-        token_scores_dict[i] = token_scores
-    return token_scores_dict
 
 def main(args):
     device = torch.device('cuda') if torch.cuda.is_available() and not args.cpu else torch.device('cpu')

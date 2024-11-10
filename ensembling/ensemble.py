@@ -1,5 +1,6 @@
 import os, sys
 import logging
+import pathlib
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -12,10 +13,16 @@ logger = logging.getLogger("ensembling")
 
 from typing import Optional, Tuple, Union, List, Dict, Any
 
+if __package__ is None and __name__ == '__main__':
+    parent = pathlib.Path(__file__).absolute().parents[1]
+    sys.path.insert(0, str(parent))
+    __package__ = 'ensembling'
 
-from models import get_models, Model
-from utils import Trie
-from search import beam_search, get_pad_beams
+
+
+from ensembling.models import get_models, Model
+from ensembling.utils import Trie
+from ensembling.search import beam_search, get_pad_beams
 
 import torch
 from transformers.generation.utils import (

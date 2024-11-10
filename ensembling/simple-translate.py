@@ -52,7 +52,7 @@ if __name__ == "__main__":
         start = time.time()
         generated_tokens = model.generate(**encoded_en, 
                                           forced_bos_token_id=force_bos_token, 
-                                          use_cache=True)
+                                          use_cache=False)
         end = time.time()
         result = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
         if args.time:

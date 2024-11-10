@@ -1,5 +1,6 @@
 import os, sys
 import logging
+import pathlib
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -9,11 +10,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ensembling")
 
+
+if __package__ is None and __name__ == '__main__':
+    parent = pathlib.Path(__file__).absolute().parents[1]
+    sys.path.insert(0, str(parent))
+    __package__ = 'ensembling'
+
 import heapq
 import torch
 
-
-from utils import compatibility
+from ensembling.utils import compatibility
 
 class TokenExtension():
     def __init__(self, score, idx, token, hyp_len):

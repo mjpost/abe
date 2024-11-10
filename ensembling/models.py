@@ -1,5 +1,6 @@
 import os, sys
 import logging
+import pathlib
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -8,6 +9,12 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 logger = logging.getLogger("ensembling")
+
+
+if __package__ is None and __name__ == '__main__':
+    parent = pathlib.Path(__file__).absolute().parents[1]
+    sys.path.insert(0, str(parent))
+    __package__ = 'ensembling'
 
 
 from typing import Any, Dict, Optional, Union, List
@@ -22,7 +29,7 @@ from transformers.generation.utils import (
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from utils import tokenize
+from ensembling.utils import tokenize
 
 def get_models(model_names, device, cache):
     models = []
@@ -138,6 +145,8 @@ class Model:
             self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.source_tokenizer.pad_token_id)  
             input_ids = self.input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
             encoder_attention_mask = (input_ids != self.pad_token_id).int().to(self.device)
+
+
             self.encoder_outputs = self.model.get_encoder()(
                 input_ids,
                 attention_mask = encoder_attention_mask,
@@ -145,6 +154,9 @@ class Model:
                 output_attentions = True,
                 output_hidden_states = True,
             )
+
+            # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
+            #     print(" ".join([str(_.item()) for _ in self.encoder_outputs.last_hidden_state[0][-1][:10]]))
 
             self.model_kwargs.encoder_outputs = self.encoder_outputs
             self.model_kwargs.attention_mask = encoder_attention_mask
@@ -212,16 +224,32 @@ class Model:
             padding_value = self.model.config.pad_token_id
         else:
             padding_value = self.model.config.eos_token_id
+
+        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
+        #     print(self.output_ids[0])
+
+        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
+        #     breakpoint()
+
+        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
+        #     print(" ".join([str(_.item()) for _ in step_outputs.logits[0, -1, :10]]))
+
         if self.is_encoder_decoder:
             next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['decoder_input_ids'] != padding_value).sum(dim=1)-1)]
         else:
             next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['input_ids'] != padding_value).sum(dim=1)-1)]
-
+        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
+        #     print(" ".join([str(_.item()) for _ in next_token_logits[0, :10]]))
+            # print(next_token_logits[0])
         # Massage the logits. This is how prefix decoding is enforced.
         next_token_logits[:, self.bad_words] = -float("inf")
         next_token_scores = torch.nn.functional.log_softmax(
             next_token_logits, dim=-1
         )
+
+        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
+        #     print(" ".join([str(_.item()) for _ in next_token_scores[0, :10]]))
+
         return step_outputs, next_token_scores
     
     def update_beam(self, beam_idx, beam_next_tokens, beam_scores, step_outputs, debug=False):
