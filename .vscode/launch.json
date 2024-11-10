@@ -12,38 +12,41 @@
             "program": "ensembling/ensemble.py",
             "console": "integratedTerminal",
             "args": [
-                "-l",
-                "256",
-                "--debug",
-                "--weights",
-                "1.0",
-                "1.0",
-                "--cache",
                 "-i",
-                "src"
+                "rachel-input-test",
+                "-l",
+                "512",
+                "-s",
+                "--debug",
+                "--cpu",
+                "-m",
+                "rewicks/baseline_en-de_64k_ep25",
+                "rewicks/monolingual_de_8k-shared_ep19"
             ]
         },
         {
-            "name": "ensemble weighted",
+            "name": "simple",
             "type": "debugpy",
             "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
             "request": "launch",
-            "program": "ensembling/ensemble.py",
+            "program": "ensembling/simple-translate.py",
             "console": "integratedTerminal",
+            "justMyCode": false,
             "args": [
-                "-m",
-                "facebook/nllb-200-distilled-600M",
-                "facebook/m2m100_1.2B",
-                "-l",
-                "256",
-                "--debug",
-                "--weights",
-                "2",
-                "1",
-                "--cache",
                 "-i",
-                "src"
+                "input",
             ]
-        }
+        },
+        {
+            "name": "test",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "test.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+            ]
+        },
     ]
 }
