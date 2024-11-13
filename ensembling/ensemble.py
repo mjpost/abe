@@ -13,7 +13,7 @@ logger = logging.getLogger("ensembling")
 
 from typing import Optional, Tuple, Union, List, Dict, Any
 
-if __package__ is None and __name__ == '__main__':
+if (__package__ is None or __package__ == "") and __name__ == '__main__':
     parent = pathlib.Path(__file__).absolute().parents[1]
     sys.path.insert(0, str(parent))
     __package__ = 'ensembling'
@@ -75,7 +75,6 @@ def ensemble_beam_search(
         for model_i, model in enumerate(models):
 
             # Right now we step on all items -- even if model is stalled.
-            # TODO: In the future, there may be room for improvement in efficiency here
             step_outputs, next_token_scores = model.step()
 
             # Cache the transformer decoder statement for faster decoding
@@ -87,23 +86,11 @@ def ensemble_beam_search(
                 logger.debug(line)
 
             for beam_i, beam_expansion in enumerate(next_token_scores):
-                if model.target_tokenizer.pad_token_id:
-                    pad_token_id = model.target_tokenizer.pad_token_id
-                else:
-                    pad_token_id = model.target_tokenizer.eos_token_id
-                # paired_outputs[beam_i][model_i] = get_sorted_output_extensions(
-                #     stalled_states[beam_i][model_i],
-                #     beam_expansion,
-                #     model.beam_scores[beam_i],
-                #     model.target_tokenizer.pad_token_id,
-                #     device=device,
-                #     trie=trie
-                # )
                 paired_outputs[beam_i][model_i] = get_sorted_output_extensions(
                     stalled_states[beam_i][model_i],
                     beam_expansion,
                     model.beam_scores[beam_i],
-                    pad_token_id,
+                    model.pad_token_id,
                     device=device,
                     trie=trie,
                     model=model
@@ -170,7 +157,8 @@ def ensemble_beam_search(
         stalled_states = update_models_with_beams(
             next_beam,
             models,
-            cached_steps                
+            cached_steps,
+            last_stalled_states=stalled_states              
             )
         step_i += 1
 
@@ -217,7 +205,8 @@ def ensemble_beam_search(
 def update_models_with_beams(
         next_beam,
         models,
-        cached_steps
+        cached_steps,
+        last_stalled_states
 ):
     
     beam_size = len(next_beam)
@@ -229,7 +218,7 @@ def update_models_with_beams(
         update_mask = [next_beam[beam_j][1][model_i] for beam_j in range(beam_size)]
         for beam_j in range(beam_size):
             stalled_states[beam_j].append(update_mask[beam_j])
-        model.update_beam(beam_indices, beam_tokens, beam_scores, step_outputs=cached_steps[model_i])
+        model.update_beam(beam_indices, beam_tokens, beam_scores, step_outputs=cached_steps[model_i], stalled=last_stalled_states[beam_j][model_i])
     
     return stalled_states
 
@@ -243,7 +232,7 @@ def get_sorted_output_extensions(
         model: Model = None) -> Tuple[torch.Tensor, torch.Tensor]:
     
     if stalled:
-        return [[beam_score], torch.tensor([pad_token_id], dtype=torch.long, device=device)]
+        return [[beam_score], torch.tensor([-1], dtype=torch.long, device=device)]
     
     # If a trie was constructed, select the top-k tokens that are in the trie (limits sort and search space)
     if trie:

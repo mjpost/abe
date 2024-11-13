@@ -25,6 +25,26 @@
             ]
         },
         {
+            "name": "gpt2",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "ensembling/ensemble.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-i",
+                "gpt2-input-test",
+                "-l",
+                "512",
+                "-s",
+                "--debug",
+                "--cpu",
+                "-m",
+                "facebook/nllb-200-distilled-600M",
+                "openai-community/gpt2"
+            ]
+        },
+        {
             "name": "simple",
             "type": "debugpy",
             "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",

@@ -11,7 +11,7 @@ logging.basicConfig(
 logger = logging.getLogger("ensembling")
 
 
-if __package__ is None and __name__ == '__main__':
+if (__package__ is None or __package__ == "")  and __name__ == '__main__':
     parent = pathlib.Path(__file__).absolute().parents[1]
     sys.path.insert(0, str(parent))
     __package__ = 'ensembling'
@@ -248,15 +248,9 @@ def get_pad_beams(next_batch_beam, models, batch_i, num_beams, weights):
             outputs.append(
                 (
                     0,
-                    # TokenExtension(
-                    #     score = model.beam_scores[batch_offset + beam_i],
-                    #     idx = torch.tensor([model.target_tokenizer.pad_token_id], dtype=torch.long, device=model.device),
-                    #     token = "<pad>",
-                    #     hyp_len = len(model.generated_tokens[batch_offset + beam_i]) + 1
-                    # )
                     TokenExtension(
                         score = model.beam_scores[batch_offset + beam_i],
-                        idx = torch.tensor([model.model.config.pad_token_id], dtype=torch.long, device=model.device),
+                        idx = torch.tensor([-1], dtype=torch.long, device=model.device),
                         token = "<pad>",
                         hyp_len = len(model.generated_tokens[batch_offset + beam_i]) + 1
                     )

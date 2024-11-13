@@ -11,7 +11,7 @@ logging.basicConfig(
 logger = logging.getLogger("ensembling")
 
 
-if __package__ is None and __name__ == '__main__':
+if (__package__ is None or __package__ == "")  and __name__ == '__main__':
     parent = pathlib.Path(__file__).absolute().parents[1]
     sys.path.insert(0, str(parent))
     __package__ = 'ensembling'
@@ -77,7 +77,7 @@ class Model:
         self.batch_size = None
         self.batch_beam_size = None
 
-        self.pad_token_id = self.target_tokenizer.pad_token_id
+        self.pad_token_id = self.target_tokenizer.pad_token_id if self.target_tokenizer.pad_token_id is not None else self.target_tokenizer.eos_token_id
         self.eos_token_ids = self.target_tokenizer.eos_token_id
 
         if isinstance(self.eos_token_ids, int):
@@ -155,17 +155,10 @@ class Model:
                 output_hidden_states = True,
             )
 
-            # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
-            #     print(" ".join([str(_.item()) for _ in self.encoder_outputs.last_hidden_state[0][-1][:10]]))
-
             self.model_kwargs.encoder_outputs = self.encoder_outputs
             self.model_kwargs.attention_mask = encoder_attention_mask
             self.encoder_attentions = self.encoder_outputs['attentions']
             self.encoder_hidden_states = (self.encoder_outputs['hidden_states'])
-        # else:
-        #     bos_tokens = [[self.model.config.bos_token_id] for _ in batch]
-        #     self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.model.config.pad_token_id)  
-        #     input_ids = self.input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
 
         # Now we set up the rest of the model and the decoder
         self.batch_size = len(batch)
@@ -199,11 +192,8 @@ class Model:
             offset = batch_i * self.num_beams
             for beam_j in range(self.num_beams):
                 self.decoder_tokens[offset + beam_j] += bos_tokens
-                
-        # Eventually we may need to figure out if left padding vs right padding is meaningful
-        padding_value = self.pad_token_id
 
-        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=padding_value).to(self.device)
+        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.pad_token_id).to(self.device)
 
 
     def step(self):
@@ -213,46 +203,20 @@ class Model:
             return_dict=True,
         )
 
-        # Get the logits for the next token
-        # torch selection for BATCH X SEQUENCE LENGTH X VOCABULARY
-        # torch.arange will create a index for each batch index position
-        # then we select the last non pad item in each sequence
-        # last item is length of sequence -1 to account for 0-indexing
-        
-        # To make the code look better, I changed self.pad_token_id (which is self.target_tokenizer.pad_token_id) to padding_value (which is self.model.config.pad_token_id)
-        if self.model.config.pad_token_id:
-            padding_value = self.model.config.pad_token_id
-        else:
-            padding_value = self.model.config.eos_token_id
-
-        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
-        #     print(self.output_ids[0])
-
-        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
-        #     breakpoint()
-
-        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
-        #     print(" ".join([str(_.item()) for _ in step_outputs.logits[0, -1, :10]]))
-
         if self.is_encoder_decoder:
-            next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['decoder_input_ids'] != padding_value).sum(dim=1)-1)]
+            next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), (self.build_attention_mask(step_inputs['decoder_input_ids']).sum(dim=1) - 1)]
         else:
-            next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), ((step_inputs['input_ids'] != padding_value).sum(dim=1)-1)]
-        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
-        #     print(" ".join([str(_.item()) for _ in next_token_logits[0, :10]]))
-            # print(next_token_logits[0])
+            next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), (self.build_attention_mask(step_inputs['input_ids']).sum(dim=1) - 1)]
+
         # Massage the logits. This is how prefix decoding is enforced.
         next_token_logits[:, self.bad_words] = -float("inf")
         next_token_scores = torch.nn.functional.log_softmax(
             next_token_logits, dim=-1
         )
 
-        # if self.model_kwargs.name_or_path == "facebook/nllb-200-distilled-600M":
-        #     print(" ".join([str(_.item()) for _ in next_token_scores[0, :10]]))
-
         return step_outputs, next_token_scores
     
-    def update_beam(self, beam_idx, beam_next_tokens, beam_scores, step_outputs, debug=False):
+    def update_beam(self, beam_idx, beam_next_tokens, beam_scores, step_outputs, stalled=False, debug=False):
         """
         Updates the model's beam sequences by extended the specified beam indices with the selected tokens.
         If {step_outputs} is defined, it will update the cache, as well.
@@ -274,7 +238,7 @@ class Model:
         for beam_i, token, score in zip(beam_idx, beam_next_tokens, token_scores):
 
             # If the generated token is not a pad token, add it to the list
-            if token != self.pad_token_id:
+            if token != -1:
                 next_beam_tokens.append(self.decoder_tokens[beam_i] + [token])
                 next_generated_tokens.append(self.generated_tokens[beam_i] + [token])
                 next_token_scores.append(self.beam_token_scores[beam_i] + [score])
@@ -290,16 +254,12 @@ class Model:
         self.generated_tokens = next_generated_tokens
         self.beam_token_scores = next_token_scores
         
-        if self.model.config.pad_token_id:
-            padding_value = self.model.config.pad_token_id
-        else:
-            padding_value = self.model.config.eos_token_id
-        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=padding_value).to(self.device)
+        self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.pad_token_id).to(self.device)
 
         # This is where we'll save the state values for caching
         # Truncation is a hacky solution to not having generation beams being the same length
         if self.cache and step_outputs is not None:
-            step_outputs['past_key_values'] = self.truncate_past_key_values(step_outputs['past_key_values'], torch.min((self.output_ids != self.pad_token_id).sum(dim=1)-1))
+            step_outputs['past_key_values'] = self.truncate_past_key_values(step_outputs['past_key_values'], torch.min((self.build_attention_mask(self.output_ids)).sum(dim=1)-1))
             self.model_kwargs = self._update_model_kwargs_for_generation(
                 step_outputs, self.model_kwargs, is_encoder_decoder=self.is_encoder_decoder
             )
@@ -319,6 +279,12 @@ class Model:
                 new_past_key_values[-1].append(tup[:, :, :min_length, :])
         return tuple([tuple(layer) for layer in new_past_key_values])
 
+
+    def build_attention_mask(self, input_ids):
+        true_mask = (input_ids == input_ids)
+        for i, j in zip(true_mask, self.decoder_tokens):
+            i[len(j):] = False
+        return true_mask.int().to(self.device)
 
     def prepare_inputs_for_generation(
         self,
@@ -345,10 +311,8 @@ class Model:
 
             decoder_input_ids = decoder_input_ids[:, remove_prefix_length:]
         
-        if self.pad_token_id:
-            decoder_attention_mask = (self.output_ids != self.pad_token_id).int().to(self.device)
-        else:
-            decoder_attention_mask = (self.output_ids != self.model.config.eos_token_id).int().to(self.device)
+        decoder_attention_mask = self.build_attention_mask(decoder_input_ids)
+
             
         if self.is_encoder_decoder:
             return {
@@ -396,7 +360,7 @@ class Model:
         """
         Extends the beam string with the specified token.
         """
-        if token_id in [2, 22]:
+        if token_id in [-1, 2, 22]:
             pass
         sequence = self.generated_tokens[beam_index] + [token_id]
         return self._decode(sequence, clean_up_tokenization_spaces=False, skip_special_tokens=True)
@@ -412,6 +376,8 @@ class Model:
 
     def id_to_token(self, token_id, skip_special_tokens=False):
         search_in = self.vocab_itos if not skip_special_tokens else self.skip_special_vocab_itos
+        if token_id == -1:
+            return "<pad>" if not skip_special_tokens else ""
         if self.speed_vocab:
             if self.vocab_size > token_id:
                 return search_in[token_id]
@@ -465,8 +431,6 @@ class Model:
                     trailing_spaces += 1
                 else:
                     break
-            # if len(tokenizer.convert_tokens_to_string(current_sub_text[-1:])) == 0:
-            #     sub_texts[-1] += " "
             sub_texts[-1] += " " * trailing_spaces
 
         if spaces_between_special_tokens:
