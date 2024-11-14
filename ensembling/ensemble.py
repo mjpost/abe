@@ -271,7 +271,7 @@ def ensemble_models(args):
     device = torch.device('cuda') if torch.cuda.is_available() and not args.cpu else torch.device('cpu')
     logging.debug(f"Using device: {device}")
 
-    models = get_models(args.models, device, args.cache)
+    models = get_models(args.models, device, args.cache, args.half)
     weights = [w / sum(args.weights) for w in args.weights] if args.weights is not None else [1/len(models) for _ in models]
     trie = Trie() if args.trie else None
 
@@ -311,6 +311,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--cpu", '-c', action='store_true', help='Use CPU instead of GPU')
     parser.add_argument("--cache", '-a', action='store_true', help='Cache the models')
+    parser.add_argument("--half", '-f', action='store_true', help='Use half precision (fp16) for inference')
 
     parser.add_argument("--debug", '-d', action='store_true', help='Debug mode')
 

@@ -8,7 +8,24 @@ import json
 
 prompt=sys.argv[1]
 
+if len(sys.argv) > 2:
+    SOURCE = sys.argv[2]
+    TARGET = sys.argv[3]
+else:
+    SOURCE = None
+    TARGET = None
+
+TOWER = "<|im_start|>user\nTranslate the following text from ```SOURCE``` into ```TARGET```.\n```SOURCE```: ```INPUT_TEXT```\n```TARGET```:<|im_end|>\n<|im_start|>assistant"
+
+if prompt == "tower":
+    template = TOWER
+
 for line in sys.stdin:
+    if SOURCE is not None:
+        template = template.replace("```SOURCE```", SOURCE)
+    if TARGET is not None:
+        template = template.replace("```TARGET```", TARGET)
+    prompt_input = template.replace("```INPUT_TEXT```", line.strip())
     print(json.dumps({
-        "decoder_inputs": f"{prompt}{line.strip()}"
+        "decoder_inputs": prompt_input
     }))

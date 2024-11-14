@@ -31,7 +31,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from ensembling.utils import tokenize
 
-def get_models(model_names, device, cache):
+def get_models(model_names, device, cache, half):
     models = []
 
     for model_i, model_name in enumerate(model_names):
@@ -40,10 +40,11 @@ def get_models(model_names, device, cache):
             config = AutoConfig.from_pretrained(model_name)
             source_tokenizer = AutoTokenizer.from_pretrained(model_name)
             target_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            dtype = torch.bfloat16 if half else torch.float32
             if config.is_encoder_decoder:
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=dtype)
             else:
-                model = AutoModelForCausalLM.from_pretrained(model_name)
+                model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
         except Exception as e:
             logger.error(f"Error instantiating model {model_name}: {e}")
             sys.exit(-1)
@@ -298,6 +299,7 @@ class Model:
         encoder_outputs=None,
         **kwargs,
     ):
+        # logger.info(f"Head mask {head_mask}")
         # cut decoder_input_ids if past is used
         if past_key_values is not None:
             past_length = past_key_values[0][0].shape[2]
@@ -322,7 +324,7 @@ class Model:
                 "decoder_input_ids": decoder_input_ids,
                 "attention_mask": attention_mask,
                 "decoder_attention_mask": decoder_attention_mask,
-                "head_mask": head_mask,
+                # "head_mask": head_mask,
                 "decoder_head_mask": decoder_head_mask,
                 "cross_attn_head_mask": cross_attn_head_mask,
                 "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
@@ -332,7 +334,7 @@ class Model:
                 "input_ids": self.output_ids,  # encoder_outputs is defined. input_ids not needed
                 "past_key_values": past_key_values,
                 "attention_mask": decoder_attention_mask,
-                "head_mask": decoder_head_mask,
+                # "head_mask": decoder_head_mask,
                 "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
             }
     
@@ -345,7 +347,7 @@ class Model:
         for beam_idx in range(self.batch_beam_size):
             out.append(f"BATCH {beam_idx // self.num_beams}\tBEAM {beam_idx % self.batch_size}\tMODEL {model_i}")
             tokens = self.target_tokenizer.convert_ids_to_tokens(self.output_ids[beam_idx].tolist())
-            token_str = self.target_tokenizer.decode(self.output_ids[beam_idx], skip_special_tokens=True)
+            token_str = self.target_tokenizer.decode(self.output_ids[beam_idx], skip_special_tokens=True).replace('\n', ' \\n ')
             out.append(f"len={len(tokens)} {self.beam_scores[beam_idx]} {' '.join(tokens)} {self.output_ids[beam_idx]} {token_str}")
         out.append("=======================================================================")
         return out
