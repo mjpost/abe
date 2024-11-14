@@ -15,7 +15,7 @@ else:
     SOURCE = None
     TARGET = None
 
-TOWER = "<|im_start|>user\nTranslate the following text from ```SOURCE``` into ```TARGET```.\n```SOURCE```: ```INPUT_TEXT```\n```TARGET```:<|im_end|>\n<|im_start|>assistant"
+TOWER = "<|im_start|>user\nTranslate the following text from ```SOURCE``` into ```TARGET```.\n```SOURCE```: ```INPUT_TEXT```\n```TARGET```:<|im_end|>\n<|im_start|>assistant\n"
 
 if prompt == "tower":
     template = TOWER
