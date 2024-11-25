@@ -1,5 +1,6 @@
 import os, sys
 import logging
+import torch
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -9,8 +10,60 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ensembling")
 
+
+class Node:
+    def __init__(self, idx=None):
+        self.idx = None
+        self.children = [None] * 256
+
+    def add_child(self, child, byte_id):
+        self.children[byte_id] = child
+
+    def enumerate_children(self):
+        for child in self.children:
+            if child is not None:
+                for subchild in child.enumerate_children():
+                    yield subchild
+                yield child
+
+
 class Trie:
-    pass
+    def __init__(self, vocab_length):
+        self.root = Node()
+        self.vocab_length = vocab_length
+
+    def add_string(self, token_string, token_id):
+        node = self.root
+        byte_sequence = token_string.encode('utf-8')
+
+        # traverse the tree, adding nodes where necessary
+        for byte_id in byte_sequence:
+            if node.children[byte_id] is None:
+                node.children[byte_id] = Node()
+            node = node.children[byte_id]
+
+        # set the last node to the token_id
+        node.idx = token_id
+
+    def search_key(self, affix_string):
+        mask = torch.zeros(self.vocab_length, dtype=torch.bool)
+        byte_sequence = affix_string.encode('utf-8')
+
+        node = self.root
+        for byte_id in byte_sequence:
+            if node.children[byte_id] is None:
+                break
+
+            node = node.children[byte_id]
+            if node.idx is not None:
+                mask[node.idx] = 1
+
+        for child in node.enumerate_children():
+            if child.idx is not None:
+                mask[child.idx] = 1
+
+        return mask
+
 
 def compatibility(models, next_state):
     # 0 means compatible and all finished

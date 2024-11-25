@@ -20,7 +20,7 @@ if (__package__ is None or __package__ == "") and __name__ == '__main__':
 
 
 
-from ensembling.models import get_models, Model
+from ensembling.models import get_models, Model, build_tries
 from ensembling.utils import Trie
 from ensembling.search import beam_search, get_pad_beams
 
@@ -39,7 +39,7 @@ def ensemble_beam_search(
             weights: List[float],
             num_beams: int = 5,
             max_length : int = -1,
-            trie : Trie = None) -> Union[GenerateBeamOutput, torch.LongTensor]:
+            tries : List[Trie] = None) -> Union[GenerateBeamOutput, torch.LongTensor]:
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
 
@@ -92,7 +92,7 @@ def ensemble_beam_search(
                     model.beam_scores[beam_i],
                     model.pad_token_id,
                     device=device,
-                    trie=trie,
+                    trie=tries,
                     model=model
                 )
 
@@ -273,7 +273,7 @@ def ensemble_models(args):
 
     models = get_models(args.models, device, args.cache, args.half)
     weights = [w / sum(args.weights) for w in args.weights] if args.weights is not None else [1/len(models) for _ in models]
-    trie = Trie() if args.trie else None
+    tries = build_tries(models) if args.trie else None
 
     istream = open(args.input, 'r') if args.input else sys.stdin
     ostream = open(args.output, 'w') if args.output else sys.stdout
@@ -287,7 +287,7 @@ def ensemble_models(args):
                     weights,
                     num_beams=args.num_beams,
                     max_length=args.max_length,
-                    trie=trie)
+                    tries=tries)
         print_output(outputs, args, ostream)
         
 

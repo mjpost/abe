@@ -29,7 +29,22 @@ from transformers.generation.utils import (
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from ensembling.utils import tokenize
+from ensembling.utils import tokenize, Trie
+
+def build_tries(models):
+    tries = []
+    for model_i, model in enumerate(models):
+        logger.info(f"Building trie for model {model_i}: {model.model_kwargs.name_or_path}")
+        vocab_length = len(model.target_tokenizer.get_vocab())
+        model_trie = Trie(vocab_length)
+        for token_id in range(vocab_length):
+            if token_id not in model.target_tokenizer.all_special_ids:
+                token_string = model.whitespace_tokenizer.decode(token_id)
+                model_trie.add_string(token_string, token_id)
+        tries.append(model_trie)
+
+    return tries
+
 
 def get_models(model_names, device, cache, half):
     models = []
@@ -63,8 +78,16 @@ class Model:
                  cache: Optional[bool] = False,
                  device: torch.device = torch.device("cpu"),
                  **kwargs):
+        
+        # in the future, we made need logic for types of tokenizers
+        # https://huggingface.co/docs/tokenizers/api/decoders
         self.source_tokenizer = source_tokenizer
         self.target_tokenizer = target_tokenizer
+
+        # we are going to maintain a separate tokenizer that does not clean up whitespace
+        self.whitespace_tokenizer = copy.deepcopy(target_tokenizer)
+        self.whitespace_tokenizer.backend_tokenizer.decoder.prepend_scheme = "never"
+
         self.model = model
 
         self.model_kwargs = self.model.config # self.model_kwargs.attr vs self.model_kwargs['attr]
