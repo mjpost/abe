@@ -20,7 +20,7 @@ if (__package__ is None or __package__ == "") and __name__ == '__main__':
 
 
 
-from ensembling.models import get_models, Model, build_tries
+from ensembling.models import get_models, Model, build_tries, build_crossproduct_filter
 from ensembling.utils import Trie
 from ensembling.search import beam_search, get_pad_beams
 
@@ -38,8 +38,7 @@ def ensemble_beam_search(
             models: List[Model],
             weights: List[float],
             num_beams: int = 5,
-            max_length : int = -1,
-            tries : List[Trie] = None) -> Union[GenerateBeamOutput, torch.LongTensor]:
+            max_length : int = -1) -> Union[GenerateBeamOutput, torch.LongTensor]:
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
 
@@ -81,7 +80,7 @@ def ensemble_beam_search(
             cached_steps.append(step_outputs)
             
             # Some debugging prints
-            logger.debug(f"STEP {step_i} ({type(model.model)}) MODEL {model_i} STALL {stalled_states}")
+            logger.debug(f"STEP {step_i} ({model.model_name}) MODEL {model_i} STALL {stalled_states}")
             for line in model.get_beam_string(step_i, model_i):
                 logger.debug(line)
 
@@ -92,8 +91,8 @@ def ensemble_beam_search(
                     model.beam_scores[beam_i],
                     model.pad_token_id,
                     device=device,
-                    trie=tries,
-                    model=model
+                    model=model,
+                    trie=args.trie
                 )
 
         # All models have stepped. Start search by seeding the heap with the best candidates from each beam
@@ -228,7 +227,7 @@ def get_sorted_output_extensions(
         beam_score,
         pad_token_id,
         device : torch.device = torch.device('cpu'),
-        trie: Optional[Trie] = None,
+        trie: bool = False,
         model: Model = None) -> Tuple[torch.Tensor, torch.Tensor]:
     
     if stalled:
@@ -273,7 +272,9 @@ def ensemble_models(args):
 
     models = get_models(args.models, device, args.cache, args.half)
     weights = [w / sum(args.weights) for w in args.weights] if args.weights is not None else [1/len(models) for _ in models]
-    tries = build_tries(models) if args.trie else None
+    if args.trie:
+        build_tries(models)
+    crossfilter = build_crossproduct_filter(models) if args.cross else None
 
     istream = open(args.input, 'r') if args.input else sys.stdin
     ostream = open(args.output, 'w') if args.output else sys.stdout
@@ -286,8 +287,7 @@ def ensemble_models(args):
                     models,
                     weights,
                     num_beams=args.num_beams,
-                    max_length=args.max_length,
-                    tries=tries)
+                    max_length=args.max_length,)
         print_output(outputs, args, ostream)
         
 
@@ -308,6 +308,7 @@ if __name__ == "__main__":
     parser.add_argument("--score", '-s', action='store_true', help='Output the score of each model')
 
     parser.add_argument("--trie", default=False, action='store_true', help='Use trie for finding extensions')
+    parser.add_argument("--cross", default=False, action='store_true', help='Build the filter for the cross product of the vocabularies in advance')
 
     parser.add_argument("--cpu", '-c', action='store_true', help='Use CPU instead of GPU')
     parser.add_argument("--cache", '-a', action='store_true', help='Cache the models')
@@ -326,6 +327,10 @@ if __name__ == "__main__":
         assert all([w >= 0 for w in args.weights]), "Weights must be non-negative"
     assert args.num_beams > 0, "Number of beams must be positive"
     assert args.batch_size > 0, "Batch size must be positive"
+
+    if args.cross and not args.trie:
+        logger.info("Setting `--trie` to True since `--cross` is set")
+        args.trie = True
 
     ensemble_models(args)
 

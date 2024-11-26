@@ -2,6 +2,8 @@ import os, sys
 import logging
 import torch
 
+from typing import List
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -12,9 +14,10 @@ logger = logging.getLogger("ensembling")
 
 
 class Node:
-    def __init__(self, idx=None):
+    def __init__(self, idx=None, byte_string=None):
         self.idx = None
         self.children = [None] * 256
+        self.byte_string = [] if byte_string is None else byte_string
 
     def add_child(self, child, byte_id):
         self.children[byte_id] = child
@@ -39,7 +42,7 @@ class Trie:
         # traverse the tree, adding nodes where necessary
         for byte_id in byte_sequence:
             if node.children[byte_id] is None:
-                node.children[byte_id] = Node()
+                node.children[byte_id] = Node(byte_string=node.byte_string + [byte_id])
             node = node.children[byte_id]
 
         # set the last node to the token_id
@@ -50,19 +53,44 @@ class Trie:
         byte_sequence = affix_string.encode('utf-8')
 
         node = self.root
+        add_children = True
         for byte_id in byte_sequence:
             if node.children[byte_id] is None:
+                add_children = False
                 break
 
             node = node.children[byte_id]
             if node.idx is not None:
                 mask[node.idx] = 1
 
-        for child in node.enumerate_children():
-            if child.idx is not None:
-                mask[child.idx] = 1
+        if add_children:
+            for child in node.enumerate_children():
+                if child.idx is not None:
+                    mask[child.idx] = 1
 
         return mask
+    
+    def search_key_indices(self, affix_string):
+        indices = []
+        byte_sequence = affix_string.encode('utf-8')
+
+        node = self.root
+        add_children = True
+        for byte_id in byte_sequence:
+            if node.children[byte_id] is None:
+                add_children = False
+                break
+
+            node = node.children[byte_id]
+            if node.idx is not None:
+                indices.append(node.idx)
+
+        if add_children:
+            for child in node.enumerate_children():
+                if child.idx is not None:
+                    indices.append(child.idx)
+
+        return indices
 
 
 def compatibility(models, next_state):
@@ -128,3 +156,31 @@ def tokenize(tokenizer, bos_tokens=None, inputs=None):
         out += tokens
         logger.debug(f"Tokenized input: {tokens}")
     return out
+
+
+SPIECE_UNDERLINE = "▁"
+BYTES = [f"<0X{i:02x}>".upper() for i in range(256)]
+def overwrite_convert_tokens_to_string(self, tokens: List[str]) -> str:
+    SPIECE_UNDERLINE = "▁"
+    """Uses source spm if _decode_use_source_tokenizer is True, and target spm otherwise"""
+    sp_model = self.spm_source if self._decode_use_source_tokenizer else self.spm_target
+    current_sub_tokens = []
+    out_string = []
+    for token in tokens:
+        if len(current_sub_tokens) > 0 and token not in BYTES:
+            out_string.append(sp_model.decode(current_sub_tokens))
+            current_sub_tokens = []
+        # make sure that special tokens are not decoded using sentencepiece model
+        if token in self.all_special_tokens:
+            out_string += [SPIECE_UNDERLINE, token]
+        elif token in BYTES:
+            current_sub_tokens.append(token)
+        else:
+            out_string.append(token)
+    
+    if len(current_sub_tokens) > 0:
+        out_string += [sp_model.decode(current_sub_tokens)]
+            
+    out_string = "".join(out_string)
+    out_string = out_string.replace(SPIECE_UNDERLINE, " ")
+    return out_string

@@ -19,7 +19,8 @@ if (__package__ is None or __package__ == "")  and __name__ == '__main__':
 
 from typing import Any, Dict, Optional, Union, List
 import copy
-
+from itertools import product
+import tqdm
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig, AutoModelForCausalLM
 
 from transformers.generation.utils import (
@@ -27,23 +28,55 @@ from transformers.generation.utils import (
 )
 
 import torch
+from types import MethodType
+
 from torch.nn.utils.rnn import pad_sequence
 
-from ensembling.utils import tokenize, Trie
+from ensembling.utils import tokenize, Trie, overwrite_convert_tokens_to_string
 
 def build_tries(models):
-    tries = []
     for model_i, model in enumerate(models):
         logger.info(f"Building trie for model {model_i}: {model.model_kwargs.name_or_path}")
         vocab_length = len(model.target_tokenizer.get_vocab())
-        model_trie = Trie(vocab_length)
+        model.trie = Trie(vocab_length)
         for token_id in range(vocab_length):
             if token_id not in model.target_tokenizer.all_special_ids:
                 token_string = model.whitespace_tokenizer.decode(token_id)
-                model_trie.add_string(token_string, token_id)
-        tries.append(model_trie)
+                model.trie.add_string(token_string, token_id)
 
-    return tries
+
+def build_crossproduct_filter(models):
+    valid_items = []
+    valid_items_idx = []
+
+    decoded_vocabs = []
+    toks_to_ids = []
+    for model_i, model in enumerate(models):
+        vocab_length = len(model.target_tokenizer.get_vocab())
+        vocab = model.whitespace_tokenizer.batch_decode(range(vocab_length))
+        for tok_id in model.target_tokenizer.all_special_ids:
+            vocab[tok_id] = None
+        decoded_vocabs.append(vocab)
+
+    def enumerate_combinations(extensions, indices, models, decoded_vocabs):
+        for ext, ind in zip(extensions, indices):
+            token_string = ext[-1]
+            additional_extensions = models[0].trie.search_key_indices(token_string)
+            if len(models) == 1:
+                for a in additional_extensions:
+                    yield ext + [decoded_vocabs[0][a]], ind + [a]
+            else:
+                for a in additional_extensions:
+                    for combo, combo_ids in enumerate_combinations([ext + decoded_vocabs[0][a]], [ind + [a]], models[1:], decoded_vocabs[1:]):
+                        yield combo, combo_ids
+
+    initial_strings = [[_] for _ in decoded_vocabs[0] if _ is not None]
+    indices = [[tok_id] for tok_id, tok in enumerate(decoded_vocabs[0]) if tok is not None]
+    for combo, combo_ids in tqdm.tqdm(enumerate_combinations(initial_strings, indices, models[1:], decoded_vocabs[1:])):
+        valid_items.append(combo)
+        valid_items_idx.append(combo_ids) 
+
+    return valid_items_idx
 
 
 def get_models(model_names, device, cache, half):
@@ -86,9 +119,14 @@ class Model:
 
         # we are going to maintain a separate tokenizer that does not clean up whitespace
         self.whitespace_tokenizer = copy.deepcopy(target_tokenizer)
-        self.whitespace_tokenizer.backend_tokenizer.decoder.prepend_scheme = "never"
+        if hasattr(self.whitespace_tokenizer, "backend_tokenizer"):
+            self.whitespace_tokenizer.backend_tokenizer.decoder.prepend_scheme = "never"
+        else:
+            self.whitespace_tokenizer.convert_tokens_to_string = MethodType(overwrite_convert_tokens_to_string, self.whitespace_tokenizer)
+            # type(self.whitespace_tokenizer).convert_tokens_to_string = overwrite_convert_tokens_to_string
 
         self.model = model
+        self.model_name = model.config.name_or_path
 
         self.model_kwargs = self.model.config # self.model_kwargs.attr vs self.model_kwargs['attr]
         self.model_kwargs.update(kwargs)
@@ -141,6 +179,8 @@ class Model:
         }
         else:
             self.legacy_added_tokens = set()
+
+        self.trie = None
 
 
     def set_input(self,
