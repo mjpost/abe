@@ -37,12 +37,13 @@ from ensembling.utils import tokenize, Trie, overwrite_convert_tokens_to_string
 def build_tries(models):
     for model_i, model in enumerate(models):
         logger.info(f"Building trie for model {model_i}: {model.model_kwargs.name_or_path}")
-        vocab_length = len(model.target_tokenizer.get_vocab())
+        # vocab_length = len(model.target_tokenizer.get_vocab())
+        vocab_length = model.model_kwargs.vocab_size
         model.trie = Trie(vocab_length)
-        for token_id in range(vocab_length):
-            if token_id not in model.target_tokenizer.all_special_ids:
-                token_string = model.whitespace_tokenizer.decode(token_id)
-                model.trie.add_string(token_string, token_id)
+        token_ids = [_ for _ in range(vocab_length) if _ not in model.target_tokenizer.all_special_ids]
+        tokens = model.whitespace_tokenizer.batch_decode(token_ids)
+        for tok_id, tok in zip(token_ids, tokens):
+            model.trie.add_string(tok, tok_id)
 
 
 def build_crossproduct_filter(models):

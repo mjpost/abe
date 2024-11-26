@@ -123,3 +123,16 @@ for test in test_strings:
             print(vocabulary[item_id], item_id)
     print("\n\n")
 
+
+import random
+for x in range(100):
+    a = random.choice(test_strings)
+    mask = 
+# scores = []
+# indices = []
+# for ind in model.trie.search_key_indices(postfix):
+#     scores.append(next_token_scores[ind] + beam_score)
+#     indices.append(ind)
+# return [scores, torch.tensor(indices, dtype=torch.long, device=device)]
+mask = model.trie.search_key_inf_mask(postfix).to(device)
+return torch.sort((next_token_scores + mask + beam_score), descending=True)

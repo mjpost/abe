@@ -1,0 +1,415 @@
+<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg version="1.1" width="1200" height="378" onload="init(evt)" viewBox="0 0 1200 378" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:fg="http://github.com/jonhoo/inferno"><!--Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples.--><!--NOTES: --><defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs><style type="text/css">
+text { font-family:"Verdana"; font-size:12px; fill:rgb(0,0,0); }
+#title { text-anchor:middle; font-size:17px; }
+#matched { text-anchor:end; }
+#search { text-anchor:end; opacity:0.1; cursor:pointer; }
+#search:hover, #search.show { opacity:1; }
+#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+#unzoom { cursor:pointer; }
+#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+.hide { display:none; }
+.parent { opacity:0.5; }
+</style><script type="text/ecmascript"><![CDATA[
+        var nametype = 'Function:';
+        var fontsize = 12;
+        var fontwidth = 0.59;
+        var xpad = 10;
+        var inverted = true;
+        var searchcolor = 'rgb(230,0,230)';
+        var fluiddrawing = true;
+        var truncate_text_right = false;
+    ]]><![CDATA["use strict";
+var details, searchbtn, unzoombtn, matchedtxt, svg, searching, frames;
+function init(evt) {
+    details = document.getElementById("details").firstChild;
+    searchbtn = document.getElementById("search");
+    unzoombtn = document.getElementById("unzoom");
+    matchedtxt = document.getElementById("matched");
+    svg = document.getElementsByTagName("svg")[0];
+    frames = document.getElementById("frames");
+    total_samples = parseInt(frames.attributes.total_samples.value);
+    searching = 0;
+
+    // Use GET parameters to restore a flamegraph's state.
+    var restore_state = function() {
+        var params = get_params();
+        if (params.x && params.y)
+            zoom(find_group(document.querySelector('[*|x="' + params.x + '"][y="' + params.y + '"]')));
+        if (params.s)
+            search(params.s);
+    };
+
+    if (fluiddrawing) {
+        // Make width dynamic so the SVG fits its parent's width.
+        svg.removeAttribute("width");
+        // Edge requires us to have a viewBox that gets updated with size changes.
+        var isEdge = /Edge\/\d./i.test(navigator.userAgent);
+        var update_for_width_change = function() {
+            if (isEdge) {
+                svg.attributes.viewBox.value = "0 0 " + svg.width.baseVal.value + " " + svg.height.baseVal.value;
+            }
+
+            // Keep consistent padding on left and right of frames container.
+            frames.attributes.width.value = svg.width.baseVal.value - xpad * 2;
+
+            // Text truncation needs to be adjusted for the current width.
+            var el = frames.children;
+            for(var i = 0; i < el.length; i++) {
+                update_text(el[i]);
+            }
+
+            // Keep search elements at a fixed distance from right edge.
+            var svgWidth = svg.width.baseVal.value;
+            searchbtn.attributes.x.value = svgWidth - xpad;
+            matchedtxt.attributes.x.value = svgWidth - xpad;
+        };
+        window.addEventListener('resize', function() {
+            update_for_width_change();
+        });
+        // This needs to be done asynchronously for Safari to work.
+        setTimeout(function() {
+            unzoom();
+            update_for_width_change();
+            restore_state();
+            if (!isEdge) {
+                svg.removeAttribute("viewBox");
+            }
+        }, 0);
+    } else {
+        restore_state();
+    }
+}
+// event listeners
+window.addEventListener("click", function(e) {
+    var target = find_group(e.target);
+    if (target) {
+        if (target.nodeName == "a") {
+            if (e.ctrlKey === false) return;
+            e.preventDefault();
+        }
+        if (target.classList.contains("parent")) unzoom();
+        zoom(target);
+
+        // set parameters for zoom state
+        var el = target.querySelector("rect");
+        if (el && el.attributes && el.attributes.y && el.attributes["fg:x"]) {
+            var params = get_params()
+            params.x = el.attributes["fg:x"].value;
+            params.y = el.attributes.y.value;
+            history.replaceState(null, null, parse_params(params));
+        }
+    }
+    else if (e.target.id == "unzoom") {
+        unzoom();
+
+        // remove zoom state
+        var params = get_params();
+        if (params.x) delete params.x;
+        if (params.y) delete params.y;
+        history.replaceState(null, null, parse_params(params));
+    }
+    else if (e.target.id == "search") search_prompt();
+}, false)
+// mouse-over for info
+// show
+window.addEventListener("mouseover", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = nametype + " " + g_to_text(target);
+}, false)
+// clear
+window.addEventListener("mouseout", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = ' ';
+}, false)
+// ctrl-F for search
+window.addEventListener("keydown",function (e) {
+    if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+        e.preventDefault();
+        search_prompt();
+    }
+}, false)
+// functions
+function get_params() {
+    var params = {};
+    var paramsarr = window.location.search.substr(1).split('&');
+    for (var i = 0; i < paramsarr.length; ++i) {
+        var tmp = paramsarr[i].split("=");
+        if (!tmp[0] || !tmp[1]) continue;
+        params[tmp[0]]  = decodeURIComponent(tmp[1]);
+    }
+    return params;
+}
+function parse_params(params) {
+    var uri = "?";
+    for (var key in params) {
+        uri += key + '=' + encodeURIComponent(params[key]) + '&';
+    }
+    if (uri.slice(-1) == "&")
+        uri = uri.substring(0, uri.length - 1);
+    if (uri == '?')
+        uri = window.location.href.split('?')[0];
+    return uri;
+}
+function find_child(node, selector) {
+    var children = node.querySelectorAll(selector);
+    if (children.length) return children[0];
+    return;
+}
+function find_group(node) {
+    var parent = node.parentElement;
+    if (!parent) return;
+    if (parent.id == "frames") return node;
+    return find_group(parent);
+}
+function orig_save(e, attr, val) {
+    if (e.attributes["fg:orig_" + attr] != undefined) return;
+    if (e.attributes[attr] == undefined) return;
+    if (val == undefined) val = e.attributes[attr].value;
+    e.setAttribute("fg:orig_" + attr, val);
+}
+function orig_load(e, attr) {
+    if (e.attributes["fg:orig_"+attr] == undefined) return;
+    e.attributes[attr].value = e.attributes["fg:orig_" + attr].value;
+    e.removeAttribute("fg:orig_" + attr);
+}
+function g_to_text(e) {
+    var text = find_child(e, "title").firstChild.nodeValue;
+    return (text)
+}
+function g_to_func(e) {
+    var func = g_to_text(e);
+    // if there's any manipulation we want to do to the function
+    // name before it's searched, do it here before returning.
+    return (func);
+}
+function update_text(e) {
+    var r = find_child(e, "rect");
+    var t = find_child(e, "text");
+    var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+    var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+    t.attributes.x.value = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+    // Smaller than this size won't fit anything
+    if (w < 2 * fontsize * fontwidth) {
+        t.textContent = "";
+        return;
+    }
+    t.textContent = txt;
+    // Fit in full text width
+    if (/^ *\$/.test(txt) || t.getComputedTextLength() < w)
+        return;
+    if (truncate_text_right) {
+        // Truncate the right side of the text.
+        for (var x = txt.length - 2; x > 0; x--) {
+            if (t.getSubStringLength(0, x + 2) <= w) {
+                t.textContent = txt.substring(0, x) + "..";
+                return;
+            }
+        }
+    } else {
+        // Truncate the left side of the text.
+        for (var x = 2; x < txt.length; x++) {
+            if (t.getSubStringLength(x - 2, txt.length) <= w) {
+                t.textContent = ".." + txt.substring(x, txt.length);
+                return;
+            }
+        }
+    }
+    t.textContent = "";
+}
+// zoom
+function zoom_reset(e) {
+    if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * parseInt(e.attributes["fg:x"].value) / total_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / total_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_reset(c[i]);
+    }
+}
+function zoom_child(e, x, zoomed_width_samples) {
+    if (e.tagName == "text") {
+        var parent_x = parseFloat(find_child(e.parentNode, "rect[x]").attributes.x.value);
+        e.attributes.x.value = format_percent(parent_x + (100 * 3 / frames.attributes.width.value));
+    } else if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * (parseInt(e.attributes["fg:x"].value) - x) / zoomed_width_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / zoomed_width_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_child(c[i], x, zoomed_width_samples);
+    }
+}
+function zoom_parent(e) {
+    if (e.attributes) {
+        if (e.attributes.x != undefined) {
+            e.attributes.x.value = "0.0%";
+        }
+        if (e.attributes.width != undefined) {
+            e.attributes.width.value = "100.0%";
+        }
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_parent(c[i]);
+    }
+}
+function zoom(node) {
+    var attr = find_child(node, "rect").attributes;
+    var width = parseInt(attr["fg:w"].value);
+    var xmin = parseInt(attr["fg:x"].value);
+    var xmax = xmin + width;
+    var ymin = parseFloat(attr.y.value);
+    unzoombtn.classList.remove("hide");
+    var el = frames.children;
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        var a = find_child(e, "rect").attributes;
+        var ex = parseInt(a["fg:x"].value);
+        var ew = parseInt(a["fg:w"].value);
+        // Is it an ancestor
+        if (!inverted) {
+            var upstack = parseFloat(a.y.value) > ymin;
+        } else {
+            var upstack = parseFloat(a.y.value) < ymin;
+        }
+        if (upstack) {
+            // Direct ancestor
+            if (ex <= xmin && (ex+ew) >= xmax) {
+                e.classList.add("parent");
+                zoom_parent(e);
+                update_text(e);
+            }
+            // not in current path
+            else
+                e.classList.add("hide");
+        }
+        // Children maybe
+        else {
+            // no common path
+            if (ex < xmin || ex >= xmax) {
+                e.classList.add("hide");
+            }
+            else {
+                zoom_child(e, xmin, width);
+                update_text(e);
+            }
+        }
+    }
+}
+function unzoom() {
+    unzoombtn.classList.add("hide");
+    var el = frames.children;
+    for(var i = 0; i < el.length; i++) {
+        el[i].classList.remove("parent");
+        el[i].classList.remove("hide");
+        zoom_reset(el[i]);
+        update_text(el[i]);
+    }
+}
+// search
+function reset_search() {
+    var el = document.querySelectorAll("#frames rect");
+    for (var i = 0; i < el.length; i++) {
+        orig_load(el[i], "fill")
+    }
+    var params = get_params();
+    delete params.s;
+    history.replaceState(null, null, parse_params(params));
+}
+function search_prompt() {
+    if (!searching) {
+        var term = prompt("Enter a search term (regexp " +
+            "allowed, eg: ^ext4_)", "");
+        if (term != null) {
+            search(term)
+        }
+    } else {
+        reset_search();
+        searching = 0;
+        searchbtn.classList.remove("show");
+        searchbtn.firstChild.nodeValue = "Search"
+        matchedtxt.classList.add("hide");
+        matchedtxt.firstChild.nodeValue = ""
+    }
+}
+function search(term) {
+    var re = new RegExp(term);
+    var el = frames.children;
+    var matches = new Object();
+    var maxwidth = 0;
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        // Skip over frames which are either not visible, or below the zoomed-to frame
+        if (e.classList.contains("hide") || e.classList.contains("parent")) {
+            continue;
+        }
+        var func = g_to_func(e);
+        var rect = find_child(e, "rect");
+        if (func == null || rect == null)
+            continue;
+        // Save max width. Only works as we have a root frame
+        var w = parseInt(rect.attributes["fg:w"].value);
+        if (w > maxwidth)
+            maxwidth = w;
+        if (func.match(re)) {
+            // highlight
+            var x = parseInt(rect.attributes["fg:x"].value);
+            orig_save(rect, "fill");
+            rect.attributes.fill.value = searchcolor;
+            // remember matches
+            if (matches[x] == undefined) {
+                matches[x] = w;
+            } else {
+                if (w > matches[x]) {
+                    // overwrite with parent
+                    matches[x] = w;
+                }
+            }
+            searching = 1;
+        }
+    }
+    if (!searching)
+        return;
+    var params = get_params();
+    params.s = term;
+    history.replaceState(null, null, parse_params(params));
+
+    searchbtn.classList.add("show");
+    searchbtn.firstChild.nodeValue = "Reset Search";
+    // calculate percent matched, excluding vertical overlap
+    var count = 0;
+    var lastx = -1;
+    var lastw = 0;
+    var keys = Array();
+    for (k in matches) {
+        if (matches.hasOwnProperty(k))
+            keys.push(k);
+    }
+    // sort the matched frames by their x location
+    // ascending, then width descending
+    keys.sort(function(a, b){
+        return a - b;
+    });
+    // Step through frames saving only the biggest bottom-up frames
+    // thanks to the sort order. This relies on the tree property
+    // where children are always smaller than their parents.
+    for (var k in keys) {
+        var x = parseInt(keys[k]);
+        var w = matches[keys[k]];
+        if (x >= lastx + lastw) {
+            count += w;
+            lastx = x;
+            lastw = w;
+        }
+    }
+    // display matched percent
+    matchedtxt.classList.remove("hide");
+    var pct = 100 * count / maxwidth;
+    if (pct != 100) pct = pct.toFixed(1);
+    matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+}
+function format_percent(n) {
+    return n.toFixed(4) + "%";
+}
+]]></script><rect x="0" y="0" width="100%" height="378" fill="url(#background)"/><text id="title" x="50.0000%" y="24.00">py-spy record -o notrie.svg --pid 100805</text><text id="details" x="10" y="40.00"> </text><text id="unzoom" class="hide" x="10" y="24.00">Reset Zoom</text><text id="search" x="1190" y="24.00">Search</text><text id="matched" x="1190" y="367.00"> </text><svg id="frames" x="10" width="1180" total_samples="47737"><g><title>beam_search (ensembling/search.py:191) (2,597 samples, 5.44%)</title><rect x="0.1320%" y="116" width="5.4402%" height="15" fill="rgb(227,0,7)" fg:x="63" fg:w="2597"/><text x="0.3820%" y="126.50">beam_se..</text></g><g><title>__lt__ (ensembling/search.py:58) (983 samples, 2.06%)</title><rect x="3.5130%" y="132" width="2.0592%" height="15" fill="rgb(217,0,24)" fg:x="1677" fg:w="983"/><text x="3.7630%" y="142.50">_..</text></g><g><title>beam_search (ensembling/search.py:193) (1,301 samples, 2.73%)</title><rect x="5.5722%" y="116" width="2.7253%" height="15" fill="rgb(221,193,54)" fg:x="2660" fg:w="1301"/><text x="5.8222%" y="126.50">be..</text></g><g><title>__len__ (torch/_tensor.py:1022) (131 samples, 0.27%)</title><rect x="8.5992%" y="148" width="0.2744%" height="15" fill="rgb(248,212,6)" fg:x="4105" fg:w="131"/><text x="8.8492%" y="158.50"></text></g><g><title>expand_frontier (ensembling/search.py:100) (271 samples, 0.57%)</title><rect x="8.3960%" y="132" width="0.5677%" height="15" fill="rgb(208,68,35)" fg:x="4008" fg:w="271"/><text x="8.6460%" y="142.50"></text></g><g><title>expand_frontier (ensembling/search.py:102) (663 samples, 1.39%)</title><rect x="8.9784%" y="132" width="1.3889%" height="15" fill="rgb(232,128,0)" fg:x="4286" fg:w="663"/><text x="9.2284%" y="142.50"></text></g><g><title>expand_frontier (ensembling/search.py:103) (117 samples, 0.25%)</title><rect x="10.3672%" y="132" width="0.2451%" height="15" fill="rgb(207,160,47)" fg:x="4949" fg:w="117"/><text x="10.6172%" y="142.50"></text></g><g><title>id_to_token (ensembling/models.py:445) (1,218 samples, 2.55%)</title><rect x="10.9538%" y="148" width="2.5515%" height="15" fill="rgb(228,23,34)" fg:x="5229" fg:w="1218"/><text x="11.2038%" y="158.50">id..</text></g><g><title>id_to_token (ensembling/models.py:448) (1,041 samples, 2.18%)</title><rect x="13.5178%" y="148" width="2.1807%" height="15" fill="rgb(218,30,26)" fg:x="6453" fg:w="1041"/><text x="13.7678%" y="158.50">i..</text></g><g><title>expand_frontier (ensembling/search.py:104) (2,932 samples, 6.14%)</title><rect x="10.6123%" y="132" width="6.1420%" height="15" fill="rgb(220,122,19)" fg:x="5066" fg:w="2932"/><text x="10.8623%" y="142.50">expand_f..</text></g><g><title>id_to_token (ensembling/models.py:449) (504 samples, 1.06%)</title><rect x="15.6985%" y="148" width="1.0558%" height="15" fill="rgb(250,228,42)" fg:x="7494" fg:w="504"/><text x="15.9485%" y="158.50"></text></g><g><title>__init__ (ensembling/search.py:39) (3,811 samples, 7.98%)</title><rect x="16.9784%" y="148" width="7.9833%" height="15" fill="rgb(240,193,28)" fg:x="8105" fg:w="3811"/><text x="17.2284%" y="158.50">__init__ (e..</text></g><g><title>&lt;listcomp&gt; (ensembling/search.py:39) (2,542 samples, 5.33%)</title><rect x="19.6368%" y="164" width="5.3250%" height="15" fill="rgb(216,20,37)" fg:x="9374" fg:w="2542"/><text x="19.8868%" y="174.50">&lt;listco..</text></g><g><title>expand_frontier (ensembling/search.py:113) (5,985 samples, 12.54%)</title><rect x="16.8276%" y="132" width="12.5374%" height="15" fill="rgb(206,188,39)" fg:x="8033" fg:w="5985"/><text x="17.0776%" y="142.50">expand_frontier (en..</text></g><g><title>__init__ (ensembling/search.py:40) (2,102 samples, 4.40%)</title><rect x="24.9618%" y="148" width="4.4033%" height="15" fill="rgb(217,207,13)" fg:x="11916" fg:w="2102"/><text x="25.2118%" y="158.50">__ini..</text></g><g><title>&lt;listcomp&gt; (ensembling/search.py:40) (1,038 samples, 2.17%)</title><rect x="27.1906%" y="164" width="2.1744%" height="15" fill="rgb(231,73,38)" fg:x="12980" fg:w="1038"/><text x="27.4406%" y="174.50">&lt;..</text></g><g><title>beam_search (ensembling/search.py:202) (10,153 samples, 21.27%)</title><rect x="8.3290%" y="116" width="21.2686%" height="15" fill="rgb(225,20,46)" fg:x="3976" fg:w="10153"/><text x="8.5790%" y="126.50">beam_search (ensembling/search.py:..</text></g><g><title>__str__ (ensembling/search.py:49) (50 samples, 0.10%)</title><rect x="29.7358%" y="148" width="0.1047%" height="15" fill="rgb(210,31,41)" fg:x="14195" fg:w="50"/><text x="29.9858%" y="158.50"></text></g><g><title>__str__ (ensembling/search.py:50) (1,107 samples, 2.32%)</title><rect x="29.8406%" y="148" width="2.3190%" height="15" fill="rgb(221,200,47)" fg:x="14245" fg:w="1107"/><text x="30.0906%" y="158.50">_..</text></g><g><title>&lt;listcomp&gt; (ensembling/search.py:50) (1,047 samples, 2.19%)</title><rect x="29.9663%" y="164" width="2.1933%" height="15" fill="rgb(226,26,5)" fg:x="14305" fg:w="1047"/><text x="30.2163%" y="174.50">&lt;..</text></g><g><title>beam_search (ensembling/search.py:203) (1,224 samples, 2.56%)</title><rect x="29.5976%" y="116" width="2.5640%" height="15" fill="rgb(249,33,26)" fg:x="14129" fg:w="1224"/><text x="29.8476%" y="126.50">be..</text></g><g><title>__hash__ (ensembling/search.py:54) (1,181 samples, 2.47%)</title><rect x="29.6877%" y="132" width="2.4740%" height="15" fill="rgb(235,183,28)" fg:x="14172" fg:w="1181"/><text x="29.9377%" y="142.50">__..</text></g><g><title>__str__ (ensembling/search.py:50) (843 samples, 1.77%)</title><rect x="32.2894%" y="148" width="1.7659%" height="15" fill="rgb(221,5,38)" fg:x="15414" fg:w="843"/><text x="32.5394%" y="158.50"></text></g><g><title>&lt;listcomp&gt; (ensembling/search.py:50) (807 samples, 1.69%)</title><rect x="32.3648%" y="164" width="1.6905%" height="15" fill="rgb(247,18,42)" fg:x="15450" fg:w="807"/><text x="32.6148%" y="174.50"></text></g><g><title>beam_search (ensembling/search.py:204) (906 samples, 1.90%)</title><rect x="32.1616%" y="116" width="1.8979%" height="15" fill="rgb(241,131,45)" fg:x="15353" fg:w="906"/><text x="32.4116%" y="126.50">b..</text></g><g><title>__hash__ (ensembling/search.py:54) (878 samples, 1.84%)</title><rect x="32.2203%" y="132" width="1.8392%" height="15" fill="rgb(249,31,29)" fg:x="15381" fg:w="878"/><text x="32.4703%" y="142.50">_..</text></g><g><title>beam_search (ensembling/search.py:205) (1,594 samples, 3.34%)</title><rect x="34.0595%" y="116" width="3.3391%" height="15" fill="rgb(225,111,53)" fg:x="16259" fg:w="1594"/><text x="34.3095%" y="126.50">bea..</text></g><g><title>__lt__ (ensembling/search.py:58) (699 samples, 1.46%)</title><rect x="35.9344%" y="132" width="1.4643%" height="15" fill="rgb(238,160,17)" fg:x="17154" fg:w="699"/><text x="36.1844%" y="142.50"></text></g><g><title>compatibility (ensembling/utils.py:126) (1,023 samples, 2.14%)</title><rect x="37.5956%" y="132" width="2.1430%" height="15" fill="rgb(214,148,48)" fg:x="17947" fg:w="1023"/><text x="37.8456%" y="142.50">c..</text></g><g><title>extend_beam_string (ensembling/models.py:429) (4,367 samples, 9.15%)</title><rect x="39.8726%" y="148" width="9.1480%" height="15" fill="rgb(232,36,49)" fg:x="19034" fg:w="4367"/><text x="40.1226%" y="158.50">extend_beam_s..</text></g><g><title>extend_beam_string (ensembling/models.py:431) (76 samples, 0.16%)</title><rect x="49.0249%" y="148" width="0.1592%" height="15" fill="rgb(209,103,24)" fg:x="23403" fg:w="76"/><text x="49.2749%" y="158.50"></text></g><g><title>_decode (ensembling/models.py:466) (76 samples, 0.16%)</title><rect x="49.3915%" y="164" width="0.1592%" height="15" fill="rgb(229,88,8)" fg:x="23578" fg:w="76"/><text x="49.6415%" y="174.50"></text></g><g><title>_decode (ensembling/models.py:470) (48 samples, 0.10%)</title><rect x="49.5590%" y="164" width="0.1006%" height="15" fill="rgb(213,181,19)" fg:x="23658" fg:w="48"/><text x="49.8090%" y="174.50"></text></g><g><title>id_to_token (ensembling/models.py:444) (108 samples, 0.23%)</title><rect x="50.4179%" y="180" width="0.2262%" height="15" fill="rgb(254,191,54)" fg:x="24068" fg:w="108"/><text x="50.6679%" y="190.50"></text></g><g><title>id_to_token (ensembling/models.py:445) (2,074 samples, 4.34%)</title><rect x="50.6442%" y="180" width="4.3446%" height="15" fill="rgb(241,83,37)" fg:x="24176" fg:w="2074"/><text x="50.8942%" y="190.50">id_to..</text></g><g><title>id_to_token (ensembling/models.py:448) (1,144 samples, 2.40%)</title><rect x="55.0872%" y="180" width="2.3965%" height="15" fill="rgb(233,36,39)" fg:x="26297" fg:w="1144"/><text x="55.3372%" y="190.50">id..</text></g><g><title>_decode (ensembling/models.py:471) (4,316 samples, 9.04%)</title><rect x="49.6596%" y="164" width="9.0412%" height="15" fill="rgb(226,3,54)" fg:x="23706" fg:w="4316"/><text x="49.9096%" y="174.50">_decode (ense..</text></g><g><title>id_to_token (ensembling/models.py:449) (581 samples, 1.22%)</title><rect x="57.4837%" y="180" width="1.2171%" height="15" fill="rgb(245,192,40)" fg:x="27441" fg:w="581"/><text x="57.7337%" y="190.50"></text></g><g><title>_decode (ensembling/models.py:472) (124 samples, 0.26%)</title><rect x="58.7008%" y="164" width="0.2598%" height="15" fill="rgb(238,167,29)" fg:x="28022" fg:w="124"/><text x="58.9508%" y="174.50"></text></g><g><title>_decode (ensembling/models.py:473) (156 samples, 0.33%)</title><rect x="58.9606%" y="164" width="0.3268%" height="15" fill="rgb(232,182,51)" fg:x="28146" fg:w="156"/><text x="59.2106%" y="174.50"></text></g><g><title>_decode (ensembling/models.py:482) (94 samples, 0.20%)</title><rect x="59.3565%" y="164" width="0.1969%" height="15" fill="rgb(231,60,39)" fg:x="28335" fg:w="94"/><text x="59.6065%" y="174.50"></text></g><g><title>_decode (ensembling/models.py:490) (139 samples, 0.29%)</title><rect x="59.5597%" y="164" width="0.2912%" height="15" fill="rgb(208,69,12)" fg:x="28432" fg:w="139"/><text x="59.8097%" y="174.50"></text></g><g><title>convert_tokens_to_string (transformers/models/marian/tokenization_marian.py:254) (67 samples, 0.14%)</title><rect x="59.9996%" y="180" width="0.1404%" height="15" fill="rgb(235,93,37)" fg:x="28642" fg:w="67"/><text x="60.2496%" y="190.50"></text></g><g><title>&lt;listcomp&gt; (transformers/tokenization_utils_base.py:1368) (857 samples, 1.80%)</title><rect x="62.7375%" y="212" width="1.7953%" height="15" fill="rgb(213,116,39)" fg:x="29949" fg:w="857"/><text x="62.9875%" y="222.50">&lt;..</text></g><g><title>all_special_tokens_extended (transformers/tokenization_utils_base.py:1351) (128 samples, 0.27%)</title><rect x="64.6019%" y="212" width="0.2681%" height="15" fill="rgb(222,207,29)" fg:x="30839" fg:w="128"/><text x="64.8519%" y="222.50"></text></g><g><title>special_tokens_map_extended (transformers/tokenization_utils_base.py:1333) (62 samples, 0.13%)</title><rect x="66.3971%" y="228" width="0.1299%" height="15" fill="rgb(206,96,30)" fg:x="31696" fg:w="62"/><text x="66.6471%" y="238.50"></text></g><g><title>special_tokens_map_extended (transformers/tokenization_utils_base.py:1334) (578 samples, 1.21%)</title><rect x="66.5270%" y="228" width="1.2108%" height="15" fill="rgb(218,138,4)" fg:x="31758" fg:w="578"/><text x="66.7770%" y="238.50"></text></g><g><title>special_tokens_map_extended (transformers/tokenization_utils_base.py:1335) (4,274 samples, 8.95%)</title><rect x="67.7378%" y="228" width="8.9532%" height="15" fill="rgb(250,191,14)" fg:x="32336" fg:w="4274"/><text x="67.9878%" y="238.50">special_token..</text></g><g><title>special_tokens_map_extended (transformers/tokenization_utils_base.py:1336) (171 samples, 0.36%)</title><rect x="76.6910%" y="228" width="0.3582%" height="15" fill="rgb(239,60,40)" fg:x="36610" fg:w="171"/><text x="76.9410%" y="238.50"></text></g><g><title>special_tokens_map_extended (transformers/tokenization_utils_base.py:1337) (324 samples, 0.68%)</title><rect x="77.0492%" y="228" width="0.6787%" height="15" fill="rgb(206,27,48)" fg:x="36781" fg:w="324"/><text x="77.2992%" y="238.50"></text></g><g><title>all_special_tokens_extended (transformers/tokenization_utils_base.py:1352) (6,195 samples, 12.98%)</title><rect x="64.8700%" y="212" width="12.9774%" height="15" fill="rgb(225,35,8)" fg:x="30967" fg:w="6195"/><text x="65.1200%" y="222.50">all_special_tokens_..</text></g><g><title>special_tokens_map_extended (transformers/tokenization_utils_base.py:1338) (57 samples, 0.12%)</title><rect x="77.7280%" y="228" width="0.1194%" height="15" fill="rgb(250,213,24)" fg:x="37105" fg:w="57"/><text x="77.9780%" y="238.50"></text></g><g><title>all_special_tokens_extended (transformers/tokenization_utils_base.py:1353) (965 samples, 2.02%)</title><rect x="77.8474%" y="212" width="2.0215%" height="15" fill="rgb(247,123,22)" fg:x="37162" fg:w="965"/><text x="78.0974%" y="222.50">a..</text></g><g><title>all_special_tokens_extended (transformers/tokenization_utils_base.py:1354) (254 samples, 0.53%)</title><rect x="79.8689%" y="212" width="0.5321%" height="15" fill="rgb(231,138,38)" fg:x="38127" fg:w="254"/><text x="80.1189%" y="222.50"></text></g><g><title>&lt;listcomp&gt; (transformers/tokenization_utils_base.py:1354) (107 samples, 0.22%)</title><rect x="80.1768%" y="228" width="0.2241%" height="15" fill="rgb(231,145,46)" fg:x="38274" fg:w="107"/><text x="80.4268%" y="238.50"></text></g><g><title>all_special_tokens_extended (transformers/tokenization_utils_base.py:1356) (1,176 samples, 2.46%)</title><rect x="80.4009%" y="212" width="2.4635%" height="15" fill="rgb(251,118,11)" fg:x="38381" fg:w="1176"/><text x="80.6509%" y="222.50">al..</text></g><g><title>all_special_tokens_extended (transformers/tokenization_utils_base.py:1357) (1,913 samples, 4.01%)</title><rect x="82.8644%" y="212" width="4.0074%" height="15" fill="rgb(217,147,25)" fg:x="39557" fg:w="1913"/><text x="83.1144%" y="222.50">all_..</text></g><g><title>all_special_tokens_extended (transformers/tokenization_utils_base.py:1358) (558 samples, 1.17%)</title><rect x="86.8718%" y="212" width="1.1689%" height="15" fill="rgb(247,81,37)" fg:x="41470" fg:w="558"/><text x="87.1218%" y="222.50"></text></g><g><title>all_special_tokens (transformers/tokenization_utils_base.py:1368) (12,902 samples, 27.03%)</title><rect x="61.0386%" y="196" width="27.0273%" height="15" fill="rgb(209,12,38)" fg:x="29138" fg:w="12902"/><text x="61.2886%" y="206.50">all_special_tokens (transformers/tokenizati..</text></g><g><title>convert_tokens_to_string (transformers/models/marian/tokenization_marian.py:256) (13,348 samples, 27.96%)</title><rect x="60.1399%" y="180" width="27.9615%" height="15" fill="rgb(227,1,9)" fg:x="28709" fg:w="13348"/><text x="60.3899%" y="190.50">convert_tokens_to_string (transformers/models..</text></g><g><title>convert_tokens_to_string (transformers/models/marian/tokenization_marian.py:260) (149 samples, 0.31%)</title><rect x="88.1015%" y="180" width="0.3121%" height="15" fill="rgb(248,47,43)" fg:x="42057" fg:w="149"/><text x="88.3515%" y="190.50"></text></g><g><title>convert_tokens_to_string (transformers/models/marian/tokenization_marian.py:261) (3,281 samples, 6.87%)</title><rect x="88.4136%" y="180" width="6.8731%" height="15" fill="rgb(221,10,30)" fg:x="42206" fg:w="3281"/><text x="88.6636%" y="190.50">convert_t..</text></g><g><title>DecodePieces (sentencepiece/__init__.py:872) (3,245 samples, 6.80%)</title><rect x="88.4890%" y="196" width="6.7977%" height="15" fill="rgb(210,229,1)" fg:x="42242" fg:w="3245"/><text x="88.7390%" y="206.50">DecodePie..</text></g><g><title>Decode (sentencepiece/__init__.py:803) (3,093 samples, 6.48%)</title><rect x="88.8074%" y="212" width="6.4793%" height="15" fill="rgb(222,148,37)" fg:x="42394" fg:w="3093"/><text x="89.0574%" y="222.50">Decode (..</text></g><g><title>_DecodePieces (sentencepiece/__init__.py:349) (3,074 samples, 6.44%)</title><rect x="88.8472%" y="228" width="6.4394%" height="15" fill="rgb(234,67,33)" fg:x="42413" fg:w="3074"/><text x="89.0972%" y="238.50">_DecodeP..</text></g><g><title>_decode (ensembling/models.py:492) (16,960 samples, 35.53%)</title><rect x="59.8697%" y="164" width="35.5280%" height="15" fill="rgb(247,98,35)" fg:x="28580" fg:w="16960"/><text x="60.1197%" y="174.50">_decode (ensembling/models.py:492)</text></g><g><title>_decode (ensembling/models.py:495) (51 samples, 0.11%)</title><rect x="95.4040%" y="164" width="0.1068%" height="15" fill="rgb(247,138,52)" fg:x="45543" fg:w="51"/><text x="95.6540%" y="174.50"></text></g><g><title>_decode (ensembling/models.py:500) (54 samples, 0.11%)</title><rect x="95.5255%" y="164" width="0.1131%" height="15" fill="rgb(213,79,30)" fg:x="45601" fg:w="54"/><text x="95.7755%" y="174.50"></text></g><g><title>compatibility (ensembling/utils.py:129) (26,723 samples, 55.98%)</title><rect x="39.7386%" y="132" width="55.9796%" height="15" fill="rgb(246,177,23)" fg:x="18970" fg:w="26723"/><text x="39.9886%" y="142.50">compatibility (ensembling/utils.py:129)</text></g><g><title>extend_beam_string (ensembling/models.py:432) (22,214 samples, 46.53%)</title><rect x="49.1841%" y="148" width="46.5341%" height="15" fill="rgb(230,62,27)" fg:x="23479" fg:w="22214"/><text x="49.4341%" y="158.50">extend_beam_string (ensembling/models.py:432)</text></g><g><title>compatibility (ensembling/utils.py:133) (1,147 samples, 2.40%)</title><rect x="95.7182%" y="132" width="2.4027%" height="15" fill="rgb(216,154,8)" fg:x="45693" fg:w="1147"/><text x="95.9682%" y="142.50">co..</text></g><g><title>&lt;listcomp&gt; (ensembling/utils.py:133) (1,100 samples, 2.30%)</title><rect x="95.8167%" y="148" width="2.3043%" height="15" fill="rgb(244,35,45)" fg:x="45740" fg:w="1100"/><text x="96.0667%" y="158.50">&lt;..</text></g><g><title>is_eos (ensembling/models.py:406) (1,032 samples, 2.16%)</title><rect x="95.9591%" y="164" width="2.1618%" height="15" fill="rgb(251,115,12)" fg:x="45808" fg:w="1032"/><text x="96.2091%" y="174.50">i..</text></g><g><title>compatibility (ensembling/utils.py:153) (87 samples, 0.18%)</title><rect x="98.1377%" y="132" width="0.1822%" height="15" fill="rgb(240,54,50)" fg:x="46848" fg:w="87"/><text x="98.3877%" y="142.50"></text></g><g><title>compatibility (ensembling/utils.py:158) (51 samples, 0.11%)</title><rect x="98.4163%" y="132" width="0.1068%" height="15" fill="rgb(233,84,52)" fg:x="46981" fg:w="51"/><text x="98.6663%" y="142.50"></text></g><g><title>beam_search (ensembling/search.py:208) (29,186 samples, 61.14%)</title><rect x="37.3987%" y="116" width="61.1392%" height="15" fill="rgb(207,117,47)" fg:x="17853" fg:w="29186"/><text x="37.6487%" y="126.50">beam_search (ensembling/search.py:208)</text></g><g><title>ensemble_beam_search (ensembling/ensemble.py:107) (47,057 samples, 98.58%)</title><rect x="0.0021%" y="100" width="98.5755%" height="15" fill="rgb(249,43,39)" fg:x="1" fg:w="47057"/><text x="0.2521%" y="110.50">ensemble_beam_search (ensembling/ensemble.py:107)</text></g><g><title>ensemble_beam_search (ensembling/ensemble.py:160) (49 samples, 0.10%)</title><rect x="98.6090%" y="100" width="0.1026%" height="15" fill="rgb(209,38,44)" fg:x="47073" fg:w="49"/><text x="98.8590%" y="110.50"></text></g><g><title>update_models_with_beams (ensembling/ensemble.py:230) (49 samples, 0.10%)</title><rect x="98.6090%" y="116" width="0.1026%" height="15" fill="rgb(236,212,23)" fg:x="47073" fg:w="49"/><text x="98.8590%" y="126.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:405) (53 samples, 0.11%)</title><rect x="98.8101%" y="308" width="0.1110%" height="15" fill="rgb(242,79,21)" fg:x="47169" fg:w="53"/><text x="99.0601%" y="318.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (53 samples, 0.11%)</title><rect x="98.8101%" y="324" width="0.1110%" height="15" fill="rgb(211,96,35)" fg:x="47169" fg:w="53"/><text x="99.0601%" y="334.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (53 samples, 0.11%)</title><rect x="98.8101%" y="340" width="0.1110%" height="15" fill="rgb(253,215,40)" fg:x="47169" fg:w="53"/><text x="99.0601%" y="350.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:424) (54 samples, 0.11%)</title><rect x="98.9442%" y="308" width="0.1131%" height="15" fill="rgb(211,81,21)" fg:x="47233" fg:w="54"/><text x="99.1942%" y="318.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (53 samples, 0.11%)</title><rect x="98.9463%" y="324" width="0.1110%" height="15" fill="rgb(208,190,38)" fg:x="47234" fg:w="53"/><text x="99.1963%" y="334.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (53 samples, 0.11%)</title><rect x="98.9463%" y="340" width="0.1110%" height="15" fill="rgb(235,213,38)" fg:x="47234" fg:w="53"/><text x="99.1963%" y="350.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:1195) (173 samples, 0.36%)</title><rect x="98.7536%" y="212" width="0.3624%" height="15" fill="rgb(237,122,38)" fg:x="47142" fg:w="173"/><text x="99.0036%" y="222.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (172 samples, 0.36%)</title><rect x="98.7557%" y="228" width="0.3603%" height="15" fill="rgb(244,218,35)" fg:x="47143" fg:w="172"/><text x="99.0057%" y="238.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (172 samples, 0.36%)</title><rect x="98.7557%" y="244" width="0.3603%" height="15" fill="rgb(240,68,47)" fg:x="47143" fg:w="172"/><text x="99.0057%" y="254.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:995) (146 samples, 0.31%)</title><rect x="98.8101%" y="260" width="0.3058%" height="15" fill="rgb(210,16,53)" fg:x="47169" fg:w="146"/><text x="99.0601%" y="270.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (146 samples, 0.31%)</title><rect x="98.8101%" y="276" width="0.3058%" height="15" fill="rgb(235,124,12)" fg:x="47169" fg:w="146"/><text x="99.0601%" y="286.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (146 samples, 0.31%)</title><rect x="98.8101%" y="292" width="0.3058%" height="15" fill="rgb(224,169,11)" fg:x="47169" fg:w="146"/><text x="99.0601%" y="302.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:1400) (175 samples, 0.37%)</title><rect x="98.7515%" y="164" width="0.3666%" height="15" fill="rgb(250,166,2)" fg:x="47141" fg:w="175"/><text x="99.0015%" y="174.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (174 samples, 0.36%)</title><rect x="98.7536%" y="180" width="0.3645%" height="15" fill="rgb(242,216,29)" fg:x="47142" fg:w="174"/><text x="99.0036%" y="190.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (174 samples, 0.36%)</title><rect x="98.7536%" y="196" width="0.3645%" height="15" fill="rgb(230,116,27)" fg:x="47142" fg:w="174"/><text x="99.0036%" y="206.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:405) (106 samples, 0.22%)</title><rect x="99.1474%" y="260" width="0.2220%" height="15" fill="rgb(228,99,48)" fg:x="47330" fg:w="106"/><text x="99.3974%" y="270.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (105 samples, 0.22%)</title><rect x="99.1495%" y="276" width="0.2200%" height="15" fill="rgb(253,11,6)" fg:x="47331" fg:w="105"/><text x="99.3995%" y="286.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (104 samples, 0.22%)</title><rect x="99.1516%" y="292" width="0.2179%" height="15" fill="rgb(247,143,39)" fg:x="47332" fg:w="104"/><text x="99.4016%" y="302.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:1650) (168 samples, 0.35%)</title><rect x="99.1286%" y="164" width="0.3519%" height="15" fill="rgb(236,97,10)" fg:x="47321" fg:w="168"/><text x="99.3786%" y="174.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (168 samples, 0.35%)</title><rect x="99.1286%" y="180" width="0.3519%" height="15" fill="rgb(233,208,19)" fg:x="47321" fg:w="168"/><text x="99.3786%" y="190.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (168 samples, 0.35%)</title><rect x="99.1286%" y="196" width="0.3519%" height="15" fill="rgb(216,164,2)" fg:x="47321" fg:w="168"/><text x="99.3786%" y="206.50"></text></g><g><title>forward (transformers/models/marian/modeling_marian.py:995) (161 samples, 0.34%)</title><rect x="99.1432%" y="212" width="0.3373%" height="15" fill="rgb(220,129,5)" fg:x="47328" fg:w="161"/><text x="99.3932%" y="222.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (160 samples, 0.34%)</title><rect x="99.1453%" y="228" width="0.3352%" height="15" fill="rgb(242,17,10)" fg:x="47329" fg:w="160"/><text x="99.3953%" y="238.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (159 samples, 0.33%)</title><rect x="99.1474%" y="244" width="0.3331%" height="15" fill="rgb(242,107,0)" fg:x="47330" fg:w="159"/><text x="99.3974%" y="254.50"></text></g><g><title>step (ensembling/models.py:266) (352 samples, 0.74%)</title><rect x="98.7473%" y="116" width="0.7374%" height="15" fill="rgb(251,28,31)" fg:x="47139" fg:w="352"/><text x="98.9973%" y="126.50"></text></g><g><title>_wrapped_call_impl (torch/nn/modules/module.py:1553) (352 samples, 0.74%)</title><rect x="98.7473%" y="132" width="0.7374%" height="15" fill="rgb(233,223,10)" fg:x="47139" fg:w="352"/><text x="98.9973%" y="142.50"></text></g><g><title>_call_impl (torch/nn/modules/module.py:1562) (351 samples, 0.74%)</title><rect x="98.7494%" y="148" width="0.7353%" height="15" fill="rgb(215,21,27)" fg:x="47140" fg:w="351"/><text x="98.9994%" y="158.50"></text></g><g><title>ensemble_beam_search (ensembling/ensemble.py:78) (429 samples, 0.90%)</title><rect x="98.7264%" y="100" width="0.8987%" height="15" fill="rgb(232,23,21)" fg:x="47129" fg:w="429"/><text x="98.9764%" y="110.50"></text></g><g><title>get_beam_string (ensembling/models.py:414) (85 samples, 0.18%)</title><rect x="99.6376%" y="116" width="0.1781%" height="15" fill="rgb(244,5,23)" fg:x="47564" fg:w="85"/><text x="99.8876%" y="126.50"></text></g><g><title>decode (transformers/models/marian/tokenization_marian.py:247) (82 samples, 0.17%)</title><rect x="99.6439%" y="132" width="0.1718%" height="15" fill="rgb(226,81,46)" fg:x="47567" fg:w="82"/><text x="99.8939%" y="142.50"></text></g><g><title>decode (transformers/tokenization_utils_base.py:3999) (76 samples, 0.16%)</title><rect x="99.6565%" y="148" width="0.1592%" height="15" fill="rgb(247,70,30)" fg:x="47573" fg:w="76"/><text x="99.9065%" y="158.50"></text></g><g><title>_tensor_str (torch/_tensor_str.py:350) (53 samples, 0.11%)</title><rect x="99.8576%" y="196" width="0.1110%" height="15" fill="rgb(212,68,19)" fg:x="47669" fg:w="53"/><text x="100.1076%" y="206.50"></text></g><g><title>_str_intern (torch/_tensor_str.py:620) (55 samples, 0.12%)</title><rect x="99.8576%" y="180" width="0.1152%" height="15" fill="rgb(240,187,13)" fg:x="47669" fg:w="55"/><text x="100.1076%" y="190.50"></text></g><g><title>ensemble_beam_search (ensembling/ensemble.py:85) (167 samples, 0.35%)</title><rect x="99.6250%" y="100" width="0.3498%" height="15" fill="rgb(223,113,26)" fg:x="47558" fg:w="167"/><text x="99.8750%" y="110.50"></text></g><g><title>get_beam_string (ensembling/models.py:415) (76 samples, 0.16%)</title><rect x="99.8157%" y="116" width="0.1592%" height="15" fill="rgb(206,192,2)" fg:x="47649" fg:w="76"/><text x="100.0657%" y="126.50"></text></g><g><title>__format__ (torch/_tensor.py:987) (73 samples, 0.15%)</title><rect x="99.8219%" y="132" width="0.1529%" height="15" fill="rgb(241,108,4)" fg:x="47652" fg:w="73"/><text x="100.0719%" y="142.50"></text></g><g><title>__repr__ (torch/_tensor.py:463) (72 samples, 0.15%)</title><rect x="99.8240%" y="148" width="0.1508%" height="15" fill="rgb(247,173,49)" fg:x="47653" fg:w="72"/><text x="100.0740%" y="158.50"></text></g><g><title>_str (torch/_tensor_str.py:698) (66 samples, 0.14%)</title><rect x="99.8366%" y="164" width="0.1383%" height="15" fill="rgb(224,114,35)" fg:x="47659" fg:w="66"/><text x="100.0866%" y="174.50"></text></g><g><title>all (47,737 samples, 100%)</title><rect x="0.0000%" y="52" width="100.0000%" height="15" fill="rgb(245,159,27)" fg:x="0" fg:w="47737"/><text x="0.2500%" y="62.50"></text></g><g><title>&lt;module&gt; (ensembling/ensemble.py:361) (47,737 samples, 100.00%)</title><rect x="0.0000%" y="68" width="100.0000%" height="15" fill="rgb(245,172,44)" fg:x="0" fg:w="47737"/><text x="0.2500%" y="78.50">&lt;module&gt; (ensembling/ensemble.py:361)</text></g><g><title>ensemble_models (ensembling/ensemble.py:308) (47,737 samples, 100.00%)</title><rect x="0.0000%" y="84" width="100.0000%" height="15" fill="rgb(236,23,11)" fg:x="0" fg:w="47737"/><text x="0.2500%" y="94.50">ensemble_models (ensembling/ensemble.py:308)</text></g></svg></svg>

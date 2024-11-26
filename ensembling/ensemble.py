@@ -60,6 +60,7 @@ def ensemble_beam_search(
     # Hypotheses on beams across models are always consistent, but one may be shorter than another.
     # We keep track of which model is stalled for any given beam/hypothesis item
     stalled_states = [[False for _ in range(num_models)] for _ in range(batch_beam_size)]
+    postfixes = [["" for _ in range(num_models)] for _ in range(batch_beam_size)]
 
     beam_completed = [[] for _ in range(batch_size)]  # contains completed sentences for each batch item
 
@@ -92,7 +93,8 @@ def ensemble_beam_search(
                     model.pad_token_id,
                     device=device,
                     model=model,
-                    trie=args.trie
+                    trie=args.trie,
+                    postfix=postfixes[beam_i][model_i]
                 )
 
         # All models have stepped. Start search by seeding the heap with the best candidates from each beam
@@ -166,6 +168,9 @@ def ensemble_beam_search(
 
     outputs = []
     for batch_i, completed in enumerate(beam_completed):
+        # TODO: if a hypothesis is incomplete (because max length has been reached, this will error due to the padding values)
+        # TODO: fill in the dummy function in utils and call here when applicable
+
         sorted_completions = sorted(completed, key=lambda x: x.raw_score(), reverse=True)
         best_completion = sorted_completions[0]
         scores = [_.item() for _ in best_completion.scores]
@@ -218,7 +223,7 @@ def update_models_with_beams(
         beam_tokens = [next_beam[beam_j][0].outputs[model_i][1].idx.item() for beam_j in range(beam_size)]
         beam_scores = [next_beam[beam_j][0].outputs[model_i][1].score for beam_j in range(beam_size)]
         update_mask = [next_beam[beam_j][1][model_i] for beam_j in range(beam_size)]
-        postfix = [next_beam[beam_j][2] for beam_j in range(beam_size)]
+        postfix = [next_beam[beam_j][2][model_i] for beam_j in range(beam_size)]
         for beam_j in range(beam_size):
             stalled_states[beam_j].append(update_mask[beam_j])
             next_postfixes[beam_j].append(postfix[beam_j])
@@ -233,14 +238,23 @@ def get_sorted_output_extensions(
         pad_token_id,
         device : torch.device = torch.device('cpu'),
         trie: bool = False,
-        model: Model = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        model: Model = None,
+        postfix : str = None) -> Tuple[torch.Tensor, torch.Tensor]:
     
     if stalled:
         return [[beam_score], torch.tensor([-1], dtype=torch.long, device=device)]
     
     # If a trie was constructed, select the top-k tokens that are in the trie (limits sort and search space)
     if trie:
-        pass
+        if postfix != "":
+            # scores = []
+            # indices = []
+            # for ind in model.trie.search_key_indices(postfix):
+            #     scores.append(next_token_scores[ind] + beam_score)
+            #     indices.append(ind)
+            # return [scores, torch.tensor(indices, dtype=torch.long, device=device)]
+            mask = model.trie.search_key_inf_mask(postfix).to(device)
+            return torch.sort((next_token_scores + mask + beam_score), descending=True)
 
     # need to somehow expand this
     return torch.sort(next_token_scores + beam_score, descending=True)
@@ -272,20 +286,24 @@ def print_output(outputs, args, ostream):
 
 
 def ensemble_models(args):
+    import time
     device = torch.device('cuda') if torch.cuda.is_available() and not args.cpu else torch.device('cpu')
     logging.debug(f"Using device: {device}")
 
+    start = time.time()
     models = get_models(args.models, device, args.cache, args.half)
     weights = [w / sum(args.weights) for w in args.weights] if args.weights is not None else [1/len(models) for _ in models]
     if args.trie:
         build_tries(models)
-    crossfilter = build_crossproduct_filter(models) if args.cross else None
-
+    # crossfilter = build_crossproduct_filter(models) if args.cross else None
+    end = time.time()
+    print(f"Time to load models: {end - start}", file=sys.stderr)
     istream = open(args.input, 'r') if args.input else sys.stdin
     ostream = open(args.output, 'w') if args.output else sys.stdout
 
     batches = batch_generator(istream, args.batch_size, len(models))
     
+    start = time.time()
     for i, batch in enumerate(batches):
         outputs = ensemble_beam_search(
                     batch,
@@ -294,6 +312,9 @@ def ensemble_models(args):
                     num_beams=args.num_beams,
                     max_length=args.max_length,)
         print_output(outputs, args, ostream)
+
+    end = time.time()
+    print(f"Time to process: {end - start}", file=sys.stderr)
         
 
 if __name__ == "__main__":

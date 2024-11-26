@@ -241,6 +241,7 @@ def beam_search(
 def get_pad_beams(next_batch_beam, models, batch_i, num_beams, weights):
     beams = next_batch_beam
     stall_state = [True for _ in models]
+    postfix = ["" for _ in models]
     batch_offset = batch_i * num_beams
     for beam_i in range(len(next_batch_beam), num_beams):
         outputs = []
@@ -256,6 +257,6 @@ def get_pad_beams(next_batch_beam, models, batch_i, num_beams, weights):
                     )
                 )
             )
-        beams.append((BeamState(outputs=outputs, beam_index=batch_offset + beam_i, weights=weights), stall_state, None))
+        beams.append((BeamState(outputs=outputs, beam_index=batch_offset + beam_i, weights=weights), stall_state, postfix))
     return beams
 

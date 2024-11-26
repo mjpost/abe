@@ -1,6 +1,7 @@
 import os, sys
 import logging
 import torch
+import math
 
 from typing import List
 
@@ -67,6 +68,28 @@ class Trie:
             for child in node.enumerate_children():
                 if child.idx is not None:
                     mask[child.idx] = 1
+
+        return mask
+    
+    def search_key_inf_mask(self, affix_string):
+        mask = torch.ones(self.vocab_length, dtype=torch.bool) * -math.inf
+        byte_sequence = affix_string.encode('utf-8')
+
+        node = self.root
+        add_children = True
+        for byte_id in byte_sequence:
+            if node.children[byte_id] is None:
+                add_children = False
+                break
+
+            node = node.children[byte_id]
+            if node.idx is not None:
+                mask[node.idx] = 0
+
+        if add_children:
+            for child in node.enumerate_children():
+                if child.idx is not None:
+                    mask[child.idx] = 0
 
         return mask
     
@@ -186,3 +209,6 @@ def overwrite_convert_tokens_to_string(self, tokens: List[str]) -> str:
     out_string = "".join(out_string)
     out_string = out_string.replace(SPIECE_UNDERLINE, " ")
     return out_string
+
+def build_incomplete_hypothesis(hypothesis):
+    pass
