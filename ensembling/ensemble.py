@@ -144,7 +144,9 @@ def ensemble_beam_search(
                 for beam_i, beam in enumerate(next_batch_beam):
                     candidates = [beam[0].outputs[_][1].token for _ in range(num_models)]
                     candidates_strings = " ||| ".join(candidates)
+                    postfix_strings = "|||".join(beam[2])
                     logger.debug(f"SELECTED {beam_i} {candidates_strings}")
+                    logger.debug(f"POSTFIXES: {postfix_strings}")
             else:
                 # if this batch item is done, we need to pad the beam with empty items
                 # this is due to having the batch_beam_size
@@ -153,7 +155,7 @@ def ensemble_beam_search(
             next_beam.extend(next_batch_beam)
 
         # after all our batch items have been extended, we'll update the models
-        stalled_states = update_models_with_beams(
+        stalled_states, postfixes = update_models_with_beams(
             next_beam,
             models,
             cached_steps,
@@ -210,16 +212,19 @@ def update_models_with_beams(
     
     beam_size = len(next_beam)
     stalled_states = [[] for _ in range(beam_size)]
+    next_postfixes = [[] for _ in range(beam_size)]
     for model_i, model in enumerate(models):
         beam_indices = [next_beam[beam_j][0].beam_index for beam_j in range(beam_size)]
         beam_tokens = [next_beam[beam_j][0].outputs[model_i][1].idx.item() for beam_j in range(beam_size)]
         beam_scores = [next_beam[beam_j][0].outputs[model_i][1].score for beam_j in range(beam_size)]
         update_mask = [next_beam[beam_j][1][model_i] for beam_j in range(beam_size)]
+        postfix = [next_beam[beam_j][2] for beam_j in range(beam_size)]
         for beam_j in range(beam_size):
             stalled_states[beam_j].append(update_mask[beam_j])
+            next_postfixes[beam_j].append(postfix[beam_j])
         model.update_beam(beam_indices, beam_tokens, beam_scores, step_outputs=cached_steps[model_i], stalled=last_stalled_states[beam_j][model_i])
     
-    return stalled_states
+    return stalled_states, next_postfixes
 
 def get_sorted_output_extensions(
         stalled,

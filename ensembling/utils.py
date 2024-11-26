@@ -119,11 +119,12 @@ def compatibility(models, next_state):
             + [leading_string.startswith(ufin) for ufin in unfinished_strings]
         if all(compatbilities):
             if all(eos_endings):
-                return 0, [True for _ in models] # compatible, no stalling, all models complete
+                return 0, [True for _ in models], [None for _ in range(num_models)] # compatible, no stalling, all models complete
             else:
-                return 1, eos_endings # compatibile, finished strings are stalled
+                postfixes = [leading_string[len(_):] for _ in candidate_strings]
+                return 1, eos_endings, postfixes# compatibile, finished strings are stalled
         else:
-            return -1, None # incompatible
+            return -1, None, None# incompatible
 
     # String lengths will determine which string is the "leading" string
     string_lengths = [len(candidate_strings[i]) for i in range(num_models)]
@@ -133,14 +134,15 @@ def compatibility(models, next_state):
     leading_string = candidate_strings[string_lengths.index(max_length)]
     compatibilities = [leading_string.startswith(candidate_strings[i]) for i in range(num_models)]
     if all(compatibilities):
+        postfixes = [leading_string[len(_):] for _ in candidate_strings]
         if max_length == min_length:
             ret_val = [False for _ in range(num_models)]
-            return 1, ret_val
+            return 1, ret_val, postfixes
         else:
             ret_val = [l == max_length for l in string_lengths]
-            return 1, ret_val
+            return 1, ret_val, postfixes
     else:
-        return -1, None
+        return -1, None, None
 
 
 def tokenize(tokenizer, bos_tokens=None, inputs=None):

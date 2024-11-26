@@ -205,7 +205,7 @@ def beam_search(
                 heapq.heappush(candidates, neighbor)
 
         
-        compat_code, next_stall_states = compatibility(models, next_state)
+        compat_code, next_stall_states, postfixes = compatibility(models, next_state)
 
         # we also want to add the "models are at max length bit here"
         if compat_code == 0 or (compat_code == 1 and (max([output[1].hyp_len for output in next_state.outputs]) >= max_length)):
@@ -229,7 +229,7 @@ def beam_search(
             ))
 
         elif compat_code == 1:
-            next_beam.append((next_state, next_stall_states))
+            next_beam.append((next_state, next_stall_states, postfixes))
             logger.debug(
                 f"SELECTED {len(next_beam)-1} {' ||| '.join([next_beam[-1][0].outputs[_][1].token for _ in range(num_models)])}"
             )
@@ -256,6 +256,6 @@ def get_pad_beams(next_batch_beam, models, batch_i, num_beams, weights):
                     )
                 )
             )
-        beams.append((BeamState(outputs=outputs, beam_index=batch_offset + beam_i, weights=weights), stall_state))
+        beams.append((BeamState(outputs=outputs, beam_index=batch_offset + beam_i, weights=weights), stall_state, None))
     return beams
 
