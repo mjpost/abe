@@ -16,7 +16,7 @@ logger = logging.getLogger("ensembling")
 
 class Node:
     def __init__(self, idx=None, byte_string=None):
-        self.idx = None
+        self.idx = [] if idx is None else idx
         self.children = [None] * 256
         self.byte_string = [] if byte_string is None else byte_string
 
@@ -38,7 +38,7 @@ class Trie:
 
     def add_string(self, token_string, token_id):
         node = self.root
-        byte_sequence = token_string.encode('utf-8')
+        byte_sequence = token_string
 
         # traverse the tree, adding nodes where necessary
         for byte_id in byte_sequence:
@@ -47,13 +47,16 @@ class Trie:
             node = node.children[byte_id]
 
         # set the last node to the token_id
-        node.idx = token_id
+        node.idx.append(token_id)
 
     def search_key(self, affix_string):
         mask = torch.zeros(self.vocab_length, dtype=torch.bool)
-        byte_sequence = affix_string.encode('utf-8')
+        byte_sequence = affix_string
 
         node = self.root
+        for id in node.idx:
+            mask[id] = 1
+
         add_children = True
         for byte_id in byte_sequence:
             if node.children[byte_id] is None:
@@ -61,21 +64,25 @@ class Trie:
                 break
 
             node = node.children[byte_id]
-            if node.idx is not None:
-                mask[node.idx] = 1
+            for id in node.idx:
+                mask[id] = 1
+
 
         if add_children:
             for child in node.enumerate_children():
-                if child.idx is not None:
-                    mask[child.idx] = 1
+                for id in child.idx:
+                    mask[id] = 1
 
         return mask
     
     def search_key_inf_mask(self, affix_string):
         mask = torch.ones(self.vocab_length, dtype=torch.bool) * -math.inf
-        byte_sequence = affix_string.encode('utf-8')
+        byte_sequence = affix_string
 
         node = self.root
+        for id in node.idx:
+            mask[id] = 0
+
         add_children = True
         for byte_id in byte_sequence:
             if node.children[byte_id] is None:
@@ -83,21 +90,24 @@ class Trie:
                 break
 
             node = node.children[byte_id]
-            if node.idx is not None:
-                mask[node.idx] = 0
+            for id in node.idx:
+                mask[id] = 0
 
         if add_children:
             for child in node.enumerate_children():
-                if child.idx is not None:
-                    mask[child.idx] = 0
+                for id in child.idx:
+                    mask[id] = 0
 
         return mask
     
     def search_key_indices(self, affix_string):
         indices = []
-        byte_sequence = affix_string.encode('utf-8')
+        byte_sequence = affix_string
 
         node = self.root
+        for id in node.idx:
+            indices += node.idx
+
         add_children = True
         for byte_id in byte_sequence:
             if node.children[byte_id] is None:
@@ -105,13 +115,11 @@ class Trie:
                 break
 
             node = node.children[byte_id]
-            if node.idx is not None:
-                indices.append(node.idx)
+            indices += node.idx
 
         if add_children:
             for child in node.enumerate_children():
-                if child.idx is not None:
-                    indices.append(child.idx)
+                indices += child.idx
 
         return indices
 
@@ -123,11 +131,7 @@ def compatibility(models, next_state):
     num_models = len(models)
     candidate_strings = []
     for model_i, model in enumerate(models):
-        if next_state.outputs[model_i][1].idx.item() == 22:
-            pass
-
         candidate_strings.append(model.extend_beam_string(next_state.beam_index, next_state.outputs[model_i][1].idx))
-
 
     # first we check if there are sentences that have ended
     eos_endings = [model.is_eos(next_state.outputs[model_i][1].idx) for model_i, model in enumerate(models)]
@@ -184,31 +188,25 @@ def tokenize(tokenizer, bos_tokens=None, inputs=None):
 
 
 SPIECE_UNDERLINE = "▁"
-BYTES = [f"<0X{i:02x}>".upper() for i in range(256)]
-def overwrite_convert_tokens_to_string(self, tokens: List[str]) -> str:
-    SPIECE_UNDERLINE = "▁"
-    """Uses source spm if _decode_use_source_tokenizer is True, and target spm otherwise"""
-    sp_model = self.spm_source if self._decode_use_source_tokenizer else self.spm_target
-    current_sub_tokens = []
-    out_string = []
-    for token in tokens:
-        if len(current_sub_tokens) > 0 and token not in BYTES:
-            out_string.append(sp_model.decode(current_sub_tokens))
-            current_sub_tokens = []
-        # make sure that special tokens are not decoded using sentencepiece model
-        if token in self.all_special_tokens:
-            out_string += [SPIECE_UNDERLINE, token]
-        elif token in BYTES:
-            current_sub_tokens.append(token)
-        else:
-            out_string.append(token)
-    
-    if len(current_sub_tokens) > 0:
-        out_string += [sp_model.decode(current_sub_tokens)]
-            
-    out_string = "".join(out_string)
-    out_string = out_string.replace(SPIECE_UNDERLINE, " ")
-    return out_string
-
-def build_incomplete_hypothesis(hypothesis):
-    pass
+GPIECE = "Ġ"
+BYTE_MAP = ["<0x" + f"{i:02x}>".upper() for i in range(256)]
+TOKENIZER_CONFIG = {
+    "facebook/nllb-200-distilled-600M": {
+        "lstrip": True,
+        "special_character": SPIECE_UNDERLINE,
+        "begin_word": True,
+        "byte_map": BYTE_MAP,
+    },
+    "rewicks/baseline_en-de_64k_ep25": {
+        "lstrip": True,
+        "special_character": SPIECE_UNDERLINE,
+        "begin_word": True,
+        "byte_map": BYTE_MAP,
+    },
+    "openai-community/gpt2": {
+        "lstrip": False,
+        "special_character": GPIECE,
+        "begin_word": True,
+        "byte_map": BYTE_MAP,
+    }
+}

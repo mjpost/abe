@@ -20,7 +20,7 @@ if (__package__ is None or __package__ == "") and __name__ == '__main__':
 
 
 
-from ensembling.models import get_models, Model, build_tries, build_crossproduct_filter
+from ensembling.models import get_models, Model, build_tries
 from ensembling.utils import Trie
 from ensembling.search import beam_search, get_pad_beams
 
@@ -38,7 +38,8 @@ def ensemble_beam_search(
             models: List[Model],
             weights: List[float],
             num_beams: int = 5,
-            max_length : int = -1) -> Union[GenerateBeamOutput, torch.LongTensor]:
+            max_length : int = -1,
+            trie: bool = False) -> Union[GenerateBeamOutput, torch.LongTensor]:
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
 
@@ -60,7 +61,7 @@ def ensemble_beam_search(
     # Hypotheses on beams across models are always consistent, but one may be shorter than another.
     # We keep track of which model is stalled for any given beam/hypothesis item
     stalled_states = [[False for _ in range(num_models)] for _ in range(batch_beam_size)]
-    postfixes = [["" for _ in range(num_models)] for _ in range(batch_beam_size)]
+    postfixes = [["".encode('utf-8') for _ in range(num_models)] for _ in range(batch_beam_size)]
 
     beam_completed = [[] for _ in range(batch_size)]  # contains completed sentences for each batch item
 
@@ -70,6 +71,12 @@ def ensemble_beam_search(
     while any(continue_search):
         paired_outputs = defaultdict(lambda: defaultdict(list)) # each beam item has a list of outputs for each model
         cached_steps = []
+
+        # This stops if our models are at their maximum generation length
+        force_stop = False
+        for model in models:
+            if model.output_ids.shape[1] == max_length:
+                force_stop = True
 
         # Each model still steps individually
         for model_i, model in enumerate(models):
@@ -90,11 +97,12 @@ def ensemble_beam_search(
                     stalled_states[beam_i][model_i],
                     beam_expansion,
                     model.beam_scores[beam_i],
-                    model.pad_token_id,
+                    model.eos_token_ids[0],
                     device=device,
                     model=model,
-                    trie=args.trie,
-                    postfix=postfixes[beam_i][model_i]
+                    trie=trie,
+                    postfix=postfixes[beam_i][model_i],
+                    force_stop = force_stop
                 )
 
         # All models have stepped. Start search by seeding the heap with the best candidates from each beam
@@ -146,7 +154,7 @@ def ensemble_beam_search(
                 for beam_i, beam in enumerate(next_batch_beam):
                     candidates = [beam[0].outputs[_][1].token for _ in range(num_models)]
                     candidates_strings = " ||| ".join(candidates)
-                    postfix_strings = "|||".join(beam[2])
+                    postfix_strings = b"|||".join(beam[2])
                     logger.debug(f"SELECTED {beam_i} {candidates_strings}")
                     logger.debug(f"POSTFIXES: {postfix_strings}")
             else:
@@ -172,6 +180,10 @@ def ensemble_beam_search(
         # TODO: fill in the dummy function in utils and call here when applicable
 
         sorted_completions = sorted(completed, key=lambda x: x.raw_score(), reverse=True)
+        if len(sorted_completions) == 0:
+            logger.info("Unable to find any completions under given criteria. Attempt to increase your maximum size and try again")
+            outputs.append({})
+            continue
         best_completion = sorted_completions[0]
         scores = [_.item() for _ in best_completion.scores]
         output_tokens = [model.target_tokenizer.convert_ids_to_tokens(best_completion.output_ids[model_i]) for model_i, model in enumerate(models)]
@@ -227,7 +239,7 @@ def update_models_with_beams(
         for beam_j in range(beam_size):
             stalled_states[beam_j].append(update_mask[beam_j])
             next_postfixes[beam_j].append(postfix[beam_j])
-        model.update_beam(beam_indices, beam_tokens, beam_scores, step_outputs=cached_steps[model_i], stalled=last_stalled_states[beam_j][model_i])
+        model.update_beam(beam_indices, beam_tokens, beam_scores, step_outputs=cached_steps[model_i])
     
     return stalled_states, next_postfixes
 
@@ -235,24 +247,22 @@ def get_sorted_output_extensions(
         stalled,
         next_token_scores,
         beam_score,
-        pad_token_id,
+        eos_token_id,
         device : torch.device = torch.device('cpu'),
         trie: bool = False,
         model: Model = None,
-        postfix : str = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        postfix : str = None,
+        force_stop : bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
     
+    if force_stop:
+        return [[(next_token_scores + beam_score)[eos_token_id]], torch.tensor([eos_token_id], dtype=torch.long, device=device)]
+
     if stalled:
         return [[beam_score], torch.tensor([-1], dtype=torch.long, device=device)]
     
     # If a trie was constructed, select the top-k tokens that are in the trie (limits sort and search space)
     if trie:
         if postfix != "":
-            # scores = []
-            # indices = []
-            # for ind in model.trie.search_key_indices(postfix):
-            #     scores.append(next_token_scores[ind] + beam_score)
-            #     indices.append(ind)
-            # return [scores, torch.tensor(indices, dtype=torch.long, device=device)]
             mask = model.trie.search_key_inf_mask(postfix).to(device)
             return torch.sort((next_token_scores + mask + beam_score), descending=True)
 
@@ -278,7 +288,7 @@ def build_output(output, args):
     if args.score:
         return json.dumps(output, ensure_ascii=False)
     else:
-        return output["sequence"]
+        return output.get(["sequence"], "Error!")
 
 def print_output(outputs, args, ostream):
     for o in outputs:
@@ -295,7 +305,6 @@ def ensemble_models(args):
     weights = [w / sum(args.weights) for w in args.weights] if args.weights is not None else [1/len(models) for _ in models]
     if args.trie:
         build_tries(models)
-    # crossfilter = build_crossproduct_filter(models) if args.cross else None
     end = time.time()
     print(f"Time to load models: {end - start}", file=sys.stderr)
     istream = open(args.input, 'r') if args.input else sys.stdin
@@ -309,8 +318,9 @@ def ensemble_models(args):
                     batch,
                     models,
                     weights,
-                    num_beams=args.num_beams,
-                    max_length=args.max_length,)
+                    num_beams = args.num_beams,
+                    max_length = args.max_length,
+                    trie = args.trie)
         print_output(outputs, args, ostream)
 
     end = time.time()

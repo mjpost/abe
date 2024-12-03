@@ -1,3 +1,10 @@
+
+########################################################################################################
+#                                                                                                      #
+#                                         PACKAGING AND LOGGING                                        #
+#                                                                                                      #
+########################################################################################################
+
 import os, sys
 import logging
 import pathlib
@@ -16,118 +23,52 @@ if (__package__ is None or __package__ == "")  and __name__ == '__main__':
     sys.path.insert(0, str(parent))
     __package__ = 'ensembling'
 
+########################################################################################################
+#                                                                                                      #
+#                                               IMPORTS                                                #
+#                                                                                                      #
+########################################################################################################
 
-from typing import Any, Dict, Optional, Union, List
-import copy
-from itertools import product
-import tqdm
+
+from typing import Optional, List, Union
+
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig, AutoModelForCausalLM
-
-from transformers.generation.utils import (
-    ModelOutput,
-)
-
 import torch
-from types import MethodType
-
 from torch.nn.utils.rnn import pad_sequence
 
-from ensembling.utils import tokenize, Trie, overwrite_convert_tokens_to_string
-
-def build_tries(models):
-    for model_i, model in enumerate(models):
-        logger.info(f"Building trie for model {model_i}: {model.model_kwargs.name_or_path}")
-        # vocab_length = len(model.target_tokenizer.get_vocab())
-        vocab_length = model.model_kwargs.vocab_size
-        model.trie = Trie(vocab_length)
-        token_ids = [_ for _ in range(vocab_length) if _ not in model.target_tokenizer.all_special_ids]
-        tokens = model.whitespace_tokenizer.batch_decode(token_ids)
-        for tok_id, tok in zip(token_ids, tokens):
-            model.trie.add_string(tok, tok_id)
+from ensembling.utils import tokenize, Trie, TOKENIZER_CONFIG, BYTE_MAP
 
 
-def build_crossproduct_filter(models):
-    valid_items = []
-    valid_items_idx = []
-
-    decoded_vocabs = []
-    toks_to_ids = []
-    for model_i, model in enumerate(models):
-        vocab_length = len(model.target_tokenizer.get_vocab())
-        vocab = model.whitespace_tokenizer.batch_decode(range(vocab_length))
-        for tok_id in model.target_tokenizer.all_special_ids:
-            vocab[tok_id] = None
-        decoded_vocabs.append(vocab)
-
-    def enumerate_combinations(extensions, indices, models, decoded_vocabs):
-        for ext, ind in zip(extensions, indices):
-            token_string = ext[-1]
-            additional_extensions = models[0].trie.search_key_indices(token_string)
-            if len(models) == 1:
-                for a in additional_extensions:
-                    yield ext + [decoded_vocabs[0][a]], ind + [a]
-            else:
-                for a in additional_extensions:
-                    for combo, combo_ids in enumerate_combinations([ext + decoded_vocabs[0][a]], [ind + [a]], models[1:], decoded_vocabs[1:]):
-                        yield combo, combo_ids
-
-    initial_strings = [[_] for _ in decoded_vocabs[0] if _ is not None]
-    indices = [[tok_id] for tok_id, tok in enumerate(decoded_vocabs[0]) if tok is not None]
-    for combo, combo_ids in tqdm.tqdm(enumerate_combinations(initial_strings, indices, models[1:], decoded_vocabs[1:])):
-        valid_items.append(combo)
-        valid_items_idx.append(combo_ids) 
-
-    return valid_items_idx
-
-
-def get_models(model_names, device, cache, half):
-    models = []
-
-    for model_i, model_name in enumerate(model_names):
-        print(f"Instantiating model {model_name}", file=sys.stderr)
-        try:
-            config = AutoConfig.from_pretrained(model_name)
-            source_tokenizer = AutoTokenizer.from_pretrained(model_name)
-            target_tokenizer = AutoTokenizer.from_pretrained(model_name)
-            dtype = torch.bfloat16 if half else torch.float32
-            if config.is_encoder_decoder:
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=dtype)
-            else:
-                model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
-        except Exception as e:
-            logger.error(f"Error instantiating model {model_name}: {e}")
-            sys.exit(-1)
-
-        model.eval().to(device)
-
-        models.append(Model(source_tokenizer, target_tokenizer, model, cache, device=device))
-
-    return models
+########################################################################################################
+#                                                                                                      #
+#                                   MODEL AND TOKENIZER CLASSES                                        #
+#                                                                                                      #
+########################################################################################################
 
 class Model:
     def __init__(self, 
-                 source_tokenizer,
-                 target_tokenizer,
-                 model,
+                 source_tokenizer: AutoTokenizer,
+                 target_tokenizer: AutoTokenizer,
+                 model: Union[AutoModelForCausalLM, AutoModelForSeq2SeqLM],
                  cache: Optional[bool] = False,
                  device: torch.device = torch.device("cpu"),
                  **kwargs):
         
         # in the future, we made need logic for types of tokenizers
         # https://huggingface.co/docs/tokenizers/api/decoders
+        self.model_name = model.config.name_or_path
         self.source_tokenizer = source_tokenizer
         self.target_tokenizer = target_tokenizer
 
         # we are going to maintain a separate tokenizer that does not clean up whitespace
-        self.whitespace_tokenizer = copy.deepcopy(target_tokenizer)
-        if hasattr(self.whitespace_tokenizer, "backend_tokenizer"):
-            self.whitespace_tokenizer.backend_tokenizer.decoder.prepend_scheme = "never"
-        else:
-            self.whitespace_tokenizer.convert_tokens_to_string = MethodType(overwrite_convert_tokens_to_string, self.whitespace_tokenizer)
-            # type(self.whitespace_tokenizer).convert_tokens_to_string = overwrite_convert_tokens_to_string
+        self.whitespace_tokenizer = FastTokenizer(target_tokenizer,
+                                                  lstrip = TOKENIZER_CONFIG.get(self.model_name, {}).get("lstrip", True),
+                                                    special_character = TOKENIZER_CONFIG.get(self.model_name, {}).get("special_character", '\u2581'),
+                                                    begin_word = TOKENIZER_CONFIG.get(self.model_name, {}).get("begin_word", True),
+                                                    byte_map = TOKENIZER_CONFIG.get(self.model_name, {}).get("byte_map", BYTE_MAP)
+                                                )
 
         self.model = model
-        self.model_name = model.config.name_or_path
 
         self.model_kwargs = self.model.config # self.model_kwargs.attr vs self.model_kwargs['attr]
         self.model_kwargs.update(kwargs)
@@ -185,7 +126,7 @@ class Model:
 
 
     def set_input(self,
-                    batch: str,
+                    batch: List[dict],
                     num_beams: int,
                     max_length: int,
                 ):
@@ -196,7 +137,6 @@ class Model:
         if self.is_encoder_decoder:
             bos_tokens = [[] for _ in batch]
             for batch_i, item in enumerate(batch):
-
                 # BOS tokens are *already* tokenized special ids
                 # There may be a variant of this going forward where we pass the ids instead
                 logger.debug(f"Tokenizing encoder inputs for batch {batch_i}")
@@ -207,10 +147,10 @@ class Model:
 
             # pack and pad these encoder inputs
             logger.debug(f"Encoder inputs: {bos_tokens}")
-            self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.source_tokenizer.pad_token_id)  
+            self.input_ids = pad_sequence([torch.tensor(_) for _ in bos_tokens], batch_first=True, padding_value=self.source_tokenizer.pad_token_id)
+            # TODO: There should be some checking here for max length
             input_ids = self.input_ids.repeat_interleave(num_beams, dim=0).to(self.device)
             encoder_attention_mask = (input_ids != self.pad_token_id).int().to(self.device)
-
 
             self.encoder_outputs = self.model.get_encoder()(
                 input_ids,
@@ -242,14 +182,13 @@ class Model:
         self.decoder_tokens = [[start_token_id] for _ in range(self.batch_beam_size)]
         
         self.generated_tokens = [[] for _ in range(self.batch_beam_size)]
-
+        self.byte_strings = ["".encode('utf-8') for _ in range(self.batch_beam_size)]
 
         # Now we need to initialize the decoder
         # This could be the prompt for language modeling
         # Or it could be the target language token for multilingual MT systems
         # It follows the same structure as the encoder inputs
         for batch_i, item in enumerate(batch):
-
             logger.debug(f"Tokenizing decoder inputs for batch {batch_i}")
             bos_tokens = tokenize(self.target_tokenizer, bos_tokens=item.get('decoder_bos_tokens', None), inputs=item.get('decoder_inputs', None))
             logger.debug(f"Decoder inputs: {bos_tokens}")
@@ -281,7 +220,11 @@ class Model:
 
         return step_outputs, next_token_scores
     
-    def update_beam(self, beam_idx, beam_next_tokens, beam_scores, step_outputs, stalled=False, debug=False):
+    def update_beam(self, 
+                    beam_idx: int, 
+                    beam_next_tokens: List[int], 
+                    beam_scores: torch.tensor,
+                    step_outputs):
         """
         Updates the model's beam sequences by extended the specified beam indices with the selected tokens.
         If {step_outputs} is defined, it will update the cache, as well.
@@ -300,6 +243,7 @@ class Model:
         next_beam_tokens = []
         next_generated_tokens = []
         next_token_scores = []
+        next_byte_strings = []
         for beam_i, token, score in zip(beam_idx, beam_next_tokens, token_scores):
 
             # If the generated token is not a pad token, add it to the list
@@ -307,17 +251,21 @@ class Model:
                 next_beam_tokens.append(self.decoder_tokens[beam_i] + [token])
                 next_generated_tokens.append(self.generated_tokens[beam_i] + [token])
                 next_token_scores.append(self.beam_token_scores[beam_i] + [score])
+                next_byte_strings.append(self.byte_strings[beam_i] + self.whitespace_tokenizer.decode(token))
+                # next_byte_strings.append(self.extend_beam_string(beam_i, token))
 
             # Otherwise, we'll keep the old list without the new addition
             else:
                 next_beam_tokens.append(self.decoder_tokens[beam_i])
                 next_generated_tokens.append(self.generated_tokens[beam_i])
                 next_token_scores.append(self.beam_token_scores[beam_i])
+                next_byte_strings.append(self.byte_strings[beam_i])
 
         self.beam_scores = beam_scores
         self.decoder_tokens = next_beam_tokens
         self.generated_tokens = next_generated_tokens
         self.beam_token_scores = next_token_scores
+        self.byte_strings = next_byte_strings
         
         self.output_ids = pad_sequence([torch.tensor(_) for _ in self.decoder_tokens], batch_first=True, padding_value=self.pad_token_id).to(self.device)
 
@@ -351,6 +299,7 @@ class Model:
             i[len(j):] = False
         return true_mask.int().to(self.device)
 
+
     def prepare_inputs_for_generation(
         self,
         decoder_input_ids,
@@ -363,7 +312,6 @@ class Model:
         encoder_outputs=None,
         **kwargs,
     ):
-        # logger.info(f"Head mask {head_mask}")
         # cut decoder_input_ids if past is used
         if past_key_values is not None:
             past_length = past_key_values[0][0].shape[2]
@@ -381,6 +329,7 @@ class Model:
 
             
         if self.is_encoder_decoder:
+            # We are no longer using `head mask` because it is not compatible with all types of models?
             return {
                 "input_ids": None,  # encoder_outputs is defined. input_ids not needed
                 "encoder_outputs": encoder_outputs,
@@ -388,7 +337,6 @@ class Model:
                 "decoder_input_ids": decoder_input_ids,
                 "attention_mask": attention_mask,
                 "decoder_attention_mask": decoder_attention_mask,
-                # "head_mask": head_mask,
                 "decoder_head_mask": decoder_head_mask,
                 "cross_attn_head_mask": cross_attn_head_mask,
                 "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
@@ -398,13 +346,11 @@ class Model:
                 "input_ids": self.output_ids,  # encoder_outputs is defined. input_ids not needed
                 "past_key_values": past_key_values,
                 "attention_mask": decoder_attention_mask,
-                # "head_mask": decoder_head_mask,
                 "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
             }
     
     def is_eos(self, token):
         return int(token) in self.eos_token_ids
-
 
     def get_beam_string(self, step_i, model_i):
         out = ["======================================================================="]
@@ -415,8 +361,6 @@ class Model:
             out.append(f"len={len(tokens)} {self.beam_scores[beam_idx]} {' '.join(tokens)} {self.output_ids[beam_idx]} {token_str}")
         out.append("=======================================================================")
         return out
-    
-
 
 
     ######################## EXTRA GARBAGE TO MAKE TOKENIZATION FASTER ############################
@@ -426,19 +370,7 @@ class Model:
         """
         Extends the beam string with the specified token.
         """
-        if token_id in [-1, 2, 22]:
-            pass
-        sequence = self.generated_tokens[beam_index] + [token_id]
-        return self._decode(sequence, clean_up_tokenization_spaces=False, skip_special_tokens=True)
-
-    def get_surface_str(self, beam_index, token_id=None):
-        """
-        Returns the surface string of the specified beam index, optionally with the specified token appended.
-        """
-        sequence = self.output_ids[beam_index]
-        if token_id is not None:
-            sequence = torch.cat([sequence, torch.tensor([token_id], device=self.device)], dim=-1)
-        return self._decode(sequence, clean_up_tokenization_spaces=False, skip_special_tokens=True)
+        return self.whitespace_tokenizer.extend_beam_string(self.byte_strings[beam_index], token_id)
 
     def id_to_token(self, token_id, skip_special_tokens=False):
         search_in = self.vocab_itos if not skip_special_tokens else self.skip_special_vocab_itos
@@ -453,65 +385,76 @@ class Model:
             return self.target_tokenizer.convert_ids_to_tokens([token_id])[0]
 
 
-    def _decode(
-        self,
-        token_ids: List[int],
-        skip_special_tokens: bool = False,
-        clean_up_tokenization_spaces: bool = None,
-        spaces_between_special_tokens: bool = True,
-        **kwargs,
-    ) -> str:
-        # from this file https://github.com/huggingface/transformers/blob/v4.43.3/src/transformers/tokenization_utils.py#L405
-        tokenizer = self.target_tokenizer
-        tokenizer._decode_use_source_tokenizer = kwargs.pop("use_source_tokenizer", False)
-
-        # Convert the token IDs to strings
-        filtered_tokens = []
-        for token_id in token_ids:
-            token = self.id_to_token(token_id, skip_special_tokens=skip_special_tokens)
-            if len(token) > 0:
-                filtered_tokens.append(token)
-
-        # To avoid mixing byte-level and unicode for byte-level BPT
-        # we need to build string separately for added tokens and byte-level tokens
-        # cf. https://github.com/huggingface/transformers/issues/1133
-        sub_texts = []
-        current_sub_text = []
-        # TODO @ArthurZ in version 5, special tokens should be handled in convert_tokens_to_string, while _convert_tokens_to_string
-        for token in filtered_tokens:
-            if token in self.legacy_added_tokens:
-                if current_sub_text:
-                    string = tokenizer.convert_tokens_to_string(current_sub_text)
-                    if len(string) > 0:
-                        sub_texts.append(string)
-                    current_sub_text = []
-                sub_texts.append(token)
+class FastTokenizer():
+    def __init__(self, original_tokenizer, lstrip=True, special_character='\u2581', begin_word=True, byte_map=BYTE_MAP):
+        self.vocab = []
+        for tok, tok_id in sorted(original_tokenizer.get_vocab().items(), key=lambda kv: kv[1]):
+            if tok_id not in original_tokenizer.all_special_ids and tok not in byte_map:
+                byte_tok = ""
+                if begin_word and tok.startswith(special_character):
+                    byte_tok += " "
+                elif (not begin_word) and (not tok.startswith(special_character)):
+                    byte_tok += " "
+                byte_tok += original_tokenizer.decode(tok_id)
+                self.vocab.append(byte_tok.encode('utf-8'))
+            elif tok in byte_map:
+                self.vocab.append(bytes([byte_map.index(tok)]))
+            elif tok_id == original_tokenizer.unk_token_id:
+                self.vocab.append(tok.encode('utf-8'))
             else:
-                current_sub_text.append(token)
-        if current_sub_text:
-            sub_texts.append(tokenizer.convert_tokens_to_string(current_sub_text))
-            # this is a dumb thing
-            trailing_spaces = 0
-            for c in current_sub_text[::-1]:
-                if c == "▁":
-                    trailing_spaces += 1
-                else:
-                    break
-            sub_texts[-1] += " " * trailing_spaces
+                self.vocab.append("".encode('utf-8'))
+        self.lstrip = lstrip
 
-        if spaces_between_special_tokens:
-            text = " ".join(sub_texts)
-        else:
-            text = "".join(sub_texts)
+    def decode(self, token_id):
+        if token_id == -1:
+            return "".encode('utf-8')
+        if token_id > len(self.vocab):
+            return "<unk>".encode('utf-8')
+        return self.vocab[token_id]
+    
+    def extend_beam_string(self, beam_string, token_id):
+        bytes = beam_string + self.decode(token_id)
+        if self.lstrip and len(bytes) > 0 and bytes[0] == 32: # we only wanna remove the first space
+            return bytes[1:]
+        return bytes
+    
 
-        clean_up_tokenization_spaces = (
-            clean_up_tokenization_spaces
-            if clean_up_tokenization_spaces is not None
-            else tokenizer.clean_up_tokenization_spaces
-        )
-        if clean_up_tokenization_spaces:
-            clean_text = tokenizer.clean_up_tokenization(text)
-            return clean_text
-        else:
-            return text
-        
+########################################################################################################
+#                                                                                                      #
+#                                   EXTERNAL FACING BUILDERS                                           #
+#                                                                                                      #
+########################################################################################################
+
+
+def build_tries(models: List[Model]):
+    for model_i, model in enumerate(models):
+        logger.info(f"Building trie for model {model_i}: {model.model_kwargs.name_or_path}")
+        vocab_length = model.model_kwargs.vocab_size
+        model.trie = Trie(vocab_length)
+        for tok_id, tok in enumerate(model.whitespace_tokenizer.vocab):
+            model.trie.add_string(tok, tok_id)
+
+
+def get_models(model_names, device = torch.device('cpu'), cache : bool = False, half : bool = False):
+    models = []
+
+    for model_i, model_name in enumerate(model_names):
+        print(f"Instantiating model {model_name}", file=sys.stderr)
+        try:
+            config = AutoConfig.from_pretrained(model_name)
+            source_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            target_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            dtype = torch.bfloat16 if half else torch.float32
+            if config.is_encoder_decoder:
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=dtype)
+            else:
+                model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
+        except Exception as e:
+            logger.error(f"Error instantiating model {model_name}: {e}")
+            sys.exit(-1)
+
+        model.eval().to(device)
+
+        models.append(Model(source_tokenizer, target_tokenizer, model, cache, device=device))
+
+    return models

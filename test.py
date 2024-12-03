@@ -39,7 +39,6 @@ def test_ensemble_scores(model_list, inputs):
             print(a, b, abs(a-b))
             assert abs(a - b) < EPSILON
 
-
 test_ensemble_scores(MODEL_LIST, INPUTS)
 
 

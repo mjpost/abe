@@ -184,7 +184,7 @@ def beam_search(
 
     next_beam = []
     beam_completed = []
-    while (len(next_beam) < num_beams) and ((len(beam_completed) + completed_beams) < num_beams):
+    while (len(next_beam) < num_beams) and ((len(beam_completed) + completed_beams) < num_beams) and len(candidates) > 0:
         if len(visited) > max_depth and len(next_beam) > min_beams:
             logger.debug(f"Search is stopping early because the depth is too high: {len(visited)}")
             return next_beam, beam_completed
