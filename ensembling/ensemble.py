@@ -1,3 +1,10 @@
+
+########################################################################################################
+#                                                                                                      #
+#                                         PACKAGING AND LOGGING                                        #
+#                                                                                                      #
+########################################################################################################
+
 import os, sys
 import logging
 import pathlib
@@ -10,28 +17,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ensembling")
 
-
-from typing import Optional, Tuple, Union, List, Dict, Any
-
 if (__package__ is None or __package__ == "") and __name__ == '__main__':
     parent = pathlib.Path(__file__).absolute().parents[1]
     sys.path.insert(0, str(parent))
     __package__ = 'ensembling'
 
+########################################################################################################
+#                                                                                                      #
+#                                               IMPORTS                                                #
+#                                                                                                      #
+########################################################################################################
 
-
-from ensembling.models import get_models, Model, build_tries
-from ensembling.utils import Trie
-from ensembling.search import beam_search, get_pad_beams
+from typing import Optional, Tuple, Union, List, Dict, Any
 
 import torch
-from transformers.generation.utils import (
-    GenerateBeamOutput, 
-)
-
 import math
 import json
 from collections import defaultdict
+
+from ensembling.models import get_models, Model, build_tries
+from ensembling.search import beam_search, get_pad_beams, sample_search
+
+
+########################################################################################################
+#                                                                                                      #
+#                                            BEAM SEARCH                                               #
+#                                                                                                      #
+########################################################################################################
+
 
 def ensemble_beam_search(
             batch: List[dict],
@@ -39,7 +52,7 @@ def ensemble_beam_search(
             weights: List[float],
             num_beams: int = 5,
             max_length : int = -1,
-            trie: bool = False) -> Union[GenerateBeamOutput, torch.LongTensor]:
+            trie: bool = False):
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.beam_search` to accept a list of input_ids
 
@@ -89,7 +102,7 @@ def ensemble_beam_search(
             
             # Some debugging prints
             logger.debug(f"STEP {step_i} ({model.model_name}) MODEL {model_i} STALL {stalled_states}")
-            for line in model.get_beam_string(step_i, model_i):
+            for line in model.get_logging_string(step_i, model_i):
                 logger.debug(line)
 
             for beam_i, beam_expansion in enumerate(next_token_scores):
@@ -271,6 +284,204 @@ def get_sorted_output_extensions(
 
 
 
+
+
+
+
+def ensemble_sample(
+            batch: List[dict],
+            models: List[Model],
+            weights: List[float],
+            num_samples: int = 1,
+            max_length : int = -1,
+            trie: bool = False):
+    r"""
+    Adapted from `~transformers.generation_utils.GenerationMixin.sample` to accept a list of input_ids
+
+    - Code source:
+        https://github.com/huggingface/transformers/blob/07e3454f034b4889925621e8e3253547d2a04aa7/src/transformers/generation/utils.py#L2454
+    - Beam search support:
+        https://github.com/huggingface/transformers/blob/main/src/transformers/generation/beam_search.py
+    """
+
+    num_models = len(models)
+    device = models[0].model.device
+    batch_size = len(batch[0])
+    batch_sample_size = batch_size * num_samples
+
+    for model_i, model in enumerate(models):
+        # Initialize each model with the input
+        model.set_input(batch[model_i], num_samples, max_length)
+    
+    # Hypotheses on beams across models are always consistent, but one may be shorter than another.
+    # We keep track of which model is stalled for any given beam/hypothesis item
+    stalled_states = [[False for _ in range(num_models)] for _ in range(batch_sample_size)]
+    postfixes = [["".encode('utf-8') for _ in range(num_models)] for _ in range(batch_sample_size)]
+
+    completed = [[] for _ in range(batch_size)]
+    continue_search = [True for _ in range(batch_size)]
+    step_i = 0
+
+    while any(continue_search):
+        paired_outputs = defaultdict(lambda: defaultdict(list)) # each beam item has a list of outputs for each model
+        cached_steps = []
+
+        # This stops if our models are at their maximum generation length
+        force_stop = False
+        for model in models:
+            if model.output_ids.shape[1] == max_length:
+                force_stop = True
+
+        # Each model still steps individually
+        for model_i, model in enumerate(models):
+
+            # Right now we step on all items -- even if model is stalled.
+            step_outputs, next_token_scores = model.step()
+
+            # Cache the transformer decoder statement for faster decoding
+            cached_steps.append(step_outputs)
+            
+            # Some debugging prints
+            logger.debug(f"STEP {step_i} ({model.model_name}) MODEL {model_i} STALL {stalled_states}")
+            for line in model.get_logging_string(step_i, model_i, type="SAMPLE"):
+                logger.debug(line)
+
+            for beam_i, beam_expansion in enumerate(next_token_scores):
+                paired_outputs[beam_i][model_i] = get_sample_output_extensions(
+                    stalled_states[beam_i][model_i],
+                    beam_expansion,
+                    model.beam_scores[beam_i],
+                    model.eos_token_ids[0],
+                    device=device,
+                    model=model,
+                    trie=trie,
+                    postfix=postfixes[beam_i][model_i],
+                    force_stop = force_stop         
+                )
+
+
+        # All models have stepped. Start search by seeding the heap with the best candidates from each beam
+        next_samples = []
+        for batch_i in range(batch_size):
+            if continue_search[batch_i]:
+
+                # This is our current best hypothesis. We don't want to continue our search if we every pass this score
+                next_batch_samples, completed_items = sample_search(
+                    batch_offset = batch_i * num_samples,
+                    num_samples = num_samples,
+                    paired_outputs = paired_outputs,
+                    models = models,
+                    weights = weights,
+                    stalled_states = stalled_states[batch_i * num_samples: (batch_i + 1) * num_samples],
+                    max_length = max_length,
+                    postfixes=postfixes
+                )
+
+                # If we have any items that have been completed, we need to add them to the completed list
+                completed[batch_i].extend(completed_items)
+                logger.debug(f"BEAM {batch_i} COMPLETED {len(completed[batch_i])} SAMPLES")
+
+                # If we've completed all samples then we quit searching
+                if len(completed[batch_i]) == num_samples:
+                    continue_search[batch_i] = False
+
+                for beam_i, beam in enumerate(next_batch_samples):
+                    candidates = [beam[0].outputs[_][1].token for _ in range(num_models)]
+                    candidates_strings = " ||| ".join(candidates)
+                    postfix_strings = b"|||".join(beam[2])
+                    logger.debug(f"SELECTED {beam_i} {candidates_strings}")
+                    logger.debug(f"POSTFIXES: {postfix_strings}")
+            else:
+                # if this batch item is done, we need to pad the beam with empty items
+                # this is due to having the batch_beam_size
+                next_batch_beam = get_pad_beams([], models, batch_i, num_samples, weights)
+
+            next_samples.extend(next_batch_samples)
+
+        # after all our batch items have been extended, we'll update the models
+        stalled_states, postfixes = update_models_with_beams(
+            next_samples,
+            models,
+            cached_steps,
+            last_stalled_states=stalled_states              
+            )
+        step_i += 1
+
+
+    outputs = []
+    for batch_i, complete in enumerate(completed):
+        # TODO: if a hypothesis is incomplete (because max length has been reached, this will error due to the padding values)
+        # TODO: fill in the dummy function in utils and call here when applicable
+
+        outputs.append([])
+        for sample_i, sample in enumerate(complete):
+            logger.debug(f"SAMPLE {sample_i} for BATCH {batch_i}")
+            scores = [_ for _ in sample.scores]
+            output_tokens = [model.target_tokenizer.convert_ids_to_tokens(sample.output_ids[model_i]) for model_i, model in enumerate(models)]
+            combined_score = sample.raw_score()
+            out_str = models[0].target_tokenizer.decode(sample.output_ids[0], skip_special_tokens=True)
+
+            for model_i, model in enumerate(models):
+                ids = sample.output_ids[model_i]
+                tokens = model.target_tokenizer.convert_ids_to_tokens(ids)
+                logger.debug(f"MODEL {model_i}")
+                logger.debug(f"IDS: {ids}")
+                logger.debug(f"TOKS: {tokens}")
+
+            input_ids = [model.input_ids[batch_i].tolist() for model in models if model.is_encoder_decoder]
+
+            outputs[-1].append(
+                {
+                    "input_ids": input_ids,
+                    "sequence": out_str,
+                    "scores": scores,
+                    "combined_score": combined_score,
+                    "token_scores": sample.token_scores,
+                    "tokens": output_tokens,
+                    "token_ids": sample.output_ids,
+                    "weights": weights
+                }
+            )
+
+    return outputs
+
+def get_sample_output_extensions(
+        stalled,
+        next_token_scores,
+        beam_score,
+        eos_token_id,
+        device : torch.device = torch.device('cpu'),
+        trie: bool = False,
+        model: Model = None,
+        postfix : str = None,
+        force_stop : bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    
+    if force_stop:
+        return [[(next_token_scores + beam_score)[eos_token_id]], torch.tensor([eos_token_id], dtype=torch.long, device=device)]
+
+    if stalled:
+        return [[beam_score], torch.tensor([-1], dtype=torch.long, device=device)]
+    
+    # If a trie was constructed, select the top-k tokens that are in the trie (limits sort and search space)
+    if trie:
+        if postfix != "":
+            mask = model.trie.search_key_inf_mask(postfix).to(device)
+            return (next_token_scores + mask + beam_score)
+
+    # need to somehow expand this
+    return (next_token_scores + beam_score)
+
+
+
+
+
+
+
+
+
+
+
+
 def batch_generator(istream, batch_size, num_models):
     batch = [[] for _ in range(num_models)]
     for line_i, line in enumerate(istream):
@@ -288,7 +499,10 @@ def build_output(output, args):
     if args.score:
         return json.dumps(output, ensure_ascii=False)
     else:
-        return output.get(["sequence"], "Error!")
+        if args.command == "sample":
+            return [_.get("sequence", "Error!") for _ in output]
+        else:
+            return output.get("sequence", "Error!")
 
 def print_output(outputs, args, ostream):
     for o in outputs:
@@ -314,13 +528,23 @@ def ensemble_models(args):
     
     start = time.time()
     for i, batch in enumerate(batches):
-        outputs = ensemble_beam_search(
-                    batch,
-                    models,
-                    weights,
-                    num_beams = args.num_beams,
-                    max_length = args.max_length,
-                    trie = args.trie)
+        if args.command == 'beam':
+            outputs = ensemble_beam_search(
+                        batch,
+                        models,
+                        weights,
+                        num_beams = args.num_beams,
+                        max_length = args.max_length,
+                        trie = args.trie)
+        else:
+            outputs = ensemble_sample(
+                        batch,
+                        models,
+                        weights,
+                        num_samples = args.num_samples,
+                        max_length = args.max_length,
+                        trie = args.trie)
+
         print_output(outputs, args, ostream)
 
     end = time.time()
@@ -331,14 +555,13 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Ensemble models')
-    
+
     parser.add_argument("--input", '-i', type=str, help='Input file. Defaults to stdin', default=None)
     parser.add_argument("--output", '-o', type=str, help='Output file. Defaults to stdout', default=None)
 
     parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"])
     parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')
 
-    parser.add_argument("--num-beams", '-b', type=int, help='Number of beams for beam search', default=5)
     parser.add_argument("--batch-size", '-t', type=int, help='Batch size for inference', default=1)
     parser.add_argument("--max-length", '-l', type=int, help='Maximum length of the output', default=100)
     parser.add_argument("--score", '-s', action='store_true', help='Output the score of each model')
@@ -352,6 +575,15 @@ if __name__ == "__main__":
 
     parser.add_argument("--debug", '-d', action='store_true', help='Debug mode')
 
+    # Add a beam search subparser
+    search = parser.add_subparsers(dest='command', required=True)
+    parser_beam = search.add_parser('beam', help='Beam search')
+    parser_beam.add_argument("--num-beams", '-b', type=int, help='Number of beams', default=5)
+
+    # Add a sample search subparser
+    parser_sample = search.add_parser('sample', help='Sample search')
+    parser_sample.add_argument("--num-samples", '-n', type=int, help='Number of samples', default=1)
+
     args = parser.parse_args()
 
 
@@ -361,11 +593,12 @@ if __name__ == "__main__":
     if args.weights is not None:
         assert len(args.models) == len(args.weights), "Number of models and weights must be the same"
         assert all([w >= 0 for w in args.weights]), "Weights must be non-negative"
-    assert args.num_beams > 0, "Number of beams must be positive"
+    assert args.command != "beam" or args.num_beams > 0, "Number of beams must be positive"
+    assert args.command != "sample" or args.num_samples > 0, "Number of samples must be positive"
     assert args.batch_size > 0, "Batch size must be positive"
 
-    if args.cross and not args.trie:
-        logger.info("Setting `--trie` to True since `--cross` is set")
+    if args.command == "sample" and not args.trie:
+        logger.info("Setting `--trie` to True for sampling")
         args.trie = True
 
     ensemble_models(args)

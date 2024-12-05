@@ -62,7 +62,7 @@ class Model:
 
         # we are going to maintain a separate tokenizer that does not clean up whitespace
         self.whitespace_tokenizer = FastTokenizer(target_tokenizer,
-                                                  lstrip = TOKENIZER_CONFIG.get(self.model_name, {}).get("lstrip", True),
+                                                  lstrip = TOKENIZER_CONFIG.get(self.model_name, {}).get("lstrip", False),
                                                     special_character = TOKENIZER_CONFIG.get(self.model_name, {}).get("special_character", '\u2581'),
                                                     begin_word = TOKENIZER_CONFIG.get(self.model_name, {}).get("begin_word", True),
                                                     byte_map = TOKENIZER_CONFIG.get(self.model_name, {}).get("byte_map", BYTE_MAP)
@@ -252,7 +252,6 @@ class Model:
                 next_generated_tokens.append(self.generated_tokens[beam_i] + [token])
                 next_token_scores.append(self.beam_token_scores[beam_i] + [score])
                 next_byte_strings.append(self.byte_strings[beam_i] + self.whitespace_tokenizer.decode(token))
-                # next_byte_strings.append(self.extend_beam_string(beam_i, token))
 
             # Otherwise, we'll keep the old list without the new addition
             else:
@@ -352,10 +351,10 @@ class Model:
     def is_eos(self, token):
         return int(token) in self.eos_token_ids
 
-    def get_beam_string(self, step_i, model_i):
+    def get_logging_string(self, step_i, model_i, type="BEAM"):
         out = ["======================================================================="]
         for beam_idx in range(self.batch_beam_size):
-            out.append(f"BATCH {beam_idx // self.num_beams}\tBEAM {beam_idx % self.batch_size}\tMODEL {model_i}")
+            out.append(f"BATCH {beam_idx // self.num_beams}\t{type} {beam_idx % self.batch_size}\tMODEL {model_i}")
             tokens = self.target_tokenizer.convert_ids_to_tokens(self.output_ids[beam_idx].tolist())
             token_str = self.target_tokenizer.decode(self.output_ids[beam_idx], skip_special_tokens=True).replace('\n', ' \\n ')
             out.append(f"len={len(tokens)} {self.beam_scores[beam_idx]} {' '.join(tokens)} {self.output_ids[beam_idx]} {token_str}")
@@ -386,7 +385,7 @@ class Model:
 
 
 class FastTokenizer():
-    def __init__(self, original_tokenizer, lstrip=True, special_character='\u2581', begin_word=True, byte_map=BYTE_MAP):
+    def __init__(self, original_tokenizer, lstrip=False, special_character='\u2581', begin_word=True, byte_map=BYTE_MAP):
         self.vocab = []
         for tok, tok_id in sorted(original_tokenizer.get_vocab().items(), key=lambda kv: kv[1]):
             if tok_id not in original_tokenizer.all_special_ids and tok not in byte_map:
@@ -414,9 +413,12 @@ class FastTokenizer():
     
     def extend_beam_string(self, beam_string, token_id):
         bytes = beam_string + self.decode(token_id)
-        if self.lstrip and len(bytes) > 0 and bytes[0] == 32: # we only wanna remove the first space
-            return bytes[1:]
+        if self.lstrip:
+            bytes = " ".encode('utf-8') + bytes
         return bytes
+        # if self.lstrip and len(bytes) > 0 and bytes[0] == 32: # we only wanna remove the first space
+        #     return bytes[1:]
+        # return bytes
     
 
 ########################################################################################################

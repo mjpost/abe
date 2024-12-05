@@ -49,13 +49,17 @@ class Trie:
         # set the last node to the token_id
         node.idx.append(token_id)
 
-    def search_key(self, affix_string):
+    def search_key(self, affix_string, allow_root=True):
+        if len(affix_string) == 0:
+            return torch.ones(self.vocab_length, dtype=torch.bool)
+
         mask = torch.zeros(self.vocab_length, dtype=torch.bool)
         byte_sequence = affix_string
 
         node = self.root
-        for id in node.idx:
-            mask[id] = 1
+        if allow_root:
+            for id in node.idx:
+                mask[id] = 1
 
         add_children = True
         for byte_id in byte_sequence:
@@ -75,13 +79,17 @@ class Trie:
 
         return mask
     
-    def search_key_inf_mask(self, affix_string):
+    def search_key_inf_mask(self, affix_string, allow_root=True):
+        if len(affix_string) == 0:
+            return torch.zeros(self.vocab_length, dtype=torch.bool)
+
         mask = torch.ones(self.vocab_length, dtype=torch.bool) * -math.inf
         byte_sequence = affix_string
 
         node = self.root
-        for id in node.idx:
-            mask[id] = 0
+        if allow_root:
+            for id in node.idx:
+                mask[id] = 0
 
         add_children = True
         for byte_id in byte_sequence:
@@ -100,13 +108,14 @@ class Trie:
 
         return mask
     
-    def search_key_indices(self, affix_string):
+    def search_key_indices(self, affix_string, allow_root = True):
         indices = []
         byte_sequence = affix_string
 
         node = self.root
-        for id in node.idx:
-            indices += node.idx
+        if allow_root or len(byte_sequence) == 0:
+            for id in node.idx:
+                indices += node.idx
 
         add_children = True
         for byte_id in byte_sequence:
@@ -121,7 +130,7 @@ class Trie:
             for child in node.enumerate_children():
                 indices += child.idx
 
-        return indices
+        return list(set(indices))
 
 
 def compatibility(models, next_state):
@@ -192,19 +201,19 @@ GPIECE = "Ġ"
 BYTE_MAP = ["<0x" + f"{i:02x}>".upper() for i in range(256)]
 TOKENIZER_CONFIG = {
     "facebook/nllb-200-distilled-600M": {
-        "lstrip": True,
+        "lstrip": False,
         "special_character": SPIECE_UNDERLINE,
         "begin_word": True,
         "byte_map": BYTE_MAP,
     },
     "rewicks/baseline_en-de_64k_ep25": {
-        "lstrip": True,
+        "lstrip": False,
         "special_character": SPIECE_UNDERLINE,
         "begin_word": True,
         "byte_map": BYTE_MAP,
     },
     "openai-community/gpt2": {
-        "lstrip": False,
+        "lstrip": True,
         "special_character": GPIECE,
         "begin_word": True,
         "byte_map": BYTE_MAP,

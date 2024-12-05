@@ -1,3 +1,11 @@
+
+########################################################################################################
+#                                                                                                      #
+#                                         PACKAGING AND LOGGING                                        #
+#                                                                                                      #
+########################################################################################################
+
+
 import os, sys
 import logging
 import pathlib
@@ -18,6 +26,7 @@ if (__package__ is None or __package__ == "")  and __name__ == '__main__':
 
 import heapq
 import torch
+from torch.nn.functional import softmax
 
 from ensembling.utils import compatibility
 
@@ -259,4 +268,157 @@ def get_pad_beams(next_batch_beam, models, batch_i, num_beams, weights):
             )
         beams.append((BeamState(outputs=outputs, beam_index=batch_offset + beam_i, weights=weights), stall_state, postfix))
     return beams
+
+def sample_search(
+        batch_offset: int,
+        num_samples: int,
+        paired_outputs,
+        models,
+        weights,
+        max_length,
+        stalled_states,
+        postfixes,
+        ):
+    
+    next_samples = []
+    completed = []
+
+    num_models = len(models)
+
+    for sample_i in range(num_samples):
+        postfix = postfixes[sample_i]
+        candidate_strings = [model.byte_strings[sample_i] for model in models]
+        leading_string = max(candidate_strings, key=len)
+        next_outputs = []
+        must_terminate = False
+        for model_i, model in enumerate(models):
+            probs = paired_outputs[batch_offset + sample_i][model_i]
+            if stalled_states[sample_i][model_i]:
+                # should just be a pad item
+                sample_id = -1
+                extension = candidate_strings[model_i]
+            elif must_terminate:
+                sample_id = model.eos_token_ids[0]
+                extension = candidate_strings[model_i]
+            else:
+                mask = model.trie.search_key_inf_mask(postfix[model_i], allow_root=False).to(model.device)
+                probs += mask
+                sample_id = torch.multinomial(softmax(probs, dim=-1), 1).item()
+
+                # special case for eos token
+                if sample_id in model.eos_token_ids:
+                    must_terminate = True
+
+                extension = model.extend_beam_string(batch_offset+sample_i, sample_id)
+                candidate_strings[model_i] = extension
+                if len(extension) > len(leading_string):
+                    leading_string = extension
+                if model_i < num_models - 1:
+                    postfix[model_i+1] = leading_string[len(candidate_strings[model_i+1]):]
+            next_outputs.append(
+                (
+                    sample_id,
+                    TokenExtension(
+                        score = probs[sample_id].item(),
+                        idx = torch.tensor(sample_id),
+                        token = model.id_to_token(sample_id),
+                        hyp_len = len(model.generated_tokens[batch_offset + sample_i]) + 1
+                    )
+                )
+            )
+        next_state = BeamState(
+            outputs = next_outputs,
+            beam_index = batch_offset + sample_i,
+            weights = weights
+        )
+
+
+        if must_terminate:
+            completed.append(
+                Hypothesis(
+                    output_ids = [
+                        model.decoder_tokens[next_state.beam_index] + [next_state.outputs[model_i][1].idx.item()]
+                        if next_state.outputs[model_i][1].idx != model.target_tokenizer.pad_token_id else \
+                            model.decoder_tokens[next_state.beam_index]
+                        for model_i, model in enumerate(models)
+                    ],
+                    scores = [next_state.outputs[model_i][1].score for model_i, model in enumerate(models)],
+                    weights = weights,
+                    token_scores = [
+                        [_.item() for _ in model.beam_token_scores[next_state.beam_index]] + \
+                            [(next_state.outputs[model_i][1].score - models[model_i].beam_scores[next_state.beam_index]).item()]
+                        if next_state.outputs[model_i][1].idx != model.target_tokenizer.pad_token_id else \
+                            [_.item() for _ in model.beam_token_scores[next_state.beam_index]]
+                        for model_i, model in enumerate(models)
+                    ]
+                )
+            )
+            next_postfixes = [b'' for _ in models]
+            next_stall_states = [True for _ in models]
+        else:
+            next_postfixes = []
+            next_stall_states = []
+            min_string_length = min([len(cand) for cand in candidate_strings])
+            for model_i, cand in enumerate(candidate_strings):
+                next_postfixes.append(leading_string[len(cand):])
+                if min_string_length == len(leading_string):
+                    next_stall_states.append(False)
+                else:
+                    next_stall_states.append(len(cand) == len(leading_string))
+
+        next_samples.append((next_state, next_stall_states, next_postfixes))
+            
+    return next_samples, completed
+
+    # while (len(next_beam) < num_beams) and ((len(beam_completed) + completed_beams) < num_beams) and len(candidates) > 0:
+    #     if len(visited) > max_depth and len(next_beam) > min_beams:
+    #         logger.debug(f"Search is stopping early because the depth is too high: {len(visited)}")
+    #         return next_beam, beam_completed
+    #     next_state = heapq.heappop(candidates)
+
+    #     if next_state.raw_score() < max_score:
+    #         logger.debug(f"Search is stopping early because the score is too low: {next_state.raw_score()} compared to best hypothesis {max_score}")
+    #         return next_beam, beam_completed
+        
+    #     if len(beam_completed) > 0 and next_state.raw_score() < beam_completed[0].raw_score():
+    #         logger.debug(f"Search is stopping early because the score is too low: {next_state.raw_score()} compared to best hypothesis {beam_completed[0].raw_score()}")
+    #         return next_beam, beam_completed
+
+    #     # add neighbors regardless of compatibility
+    #     for neighbor in expand_frontier(models, next_state, paired_outputs):
+    #         if hash(neighbor) not in visited:
+    #             visited.add(hash(neighbor))
+    #             heapq.heappush(candidates, neighbor)
+
+        
+    #     compat_code, next_stall_states, postfixes = compatibility(models, next_state)
+
+    #     # we also want to add the "models are at max length bit here"
+    #     if compat_code == 0 or (compat_code == 1 and (max([output[1].hyp_len for output in next_state.outputs]) >= max_length)):
+    #         # all models have terminated with eos
+    #         beam_completed.append(Hypothesis(
+    #             output_ids = [
+    #                 model.decoder_tokens[next_state.beam_index] + [next_state.outputs[model_i][1].idx.item()]
+    #                 if next_state.outputs[model_i][1].idx != model.target_tokenizer.pad_token_id else \
+    #                     model.decoder_tokens[next_state.beam_index]
+    #                 for model_i, model in enumerate(models)
+    #             ],
+    #             scores = [next_state.outputs[model_i][1].score for model_i, model in enumerate(models)],
+    #             weights = weights,
+    #             token_scores = [
+    #                 [_.item() for _ in model.beam_token_scores[next_state.beam_index]] + \
+    #                     [(next_state.outputs[model_i][1].score - models[model_i].beam_scores[next_state.beam_index]).item()]
+    #                 if next_state.outputs[model_i][1].idx != model.target_tokenizer.pad_token_id else \
+    #                     [_.item() for _ in model.beam_token_scores[next_state.beam_index]]
+    #                 for model_i, model in enumerate(models)
+    #             ]
+    #         ))
+
+    #     elif compat_code == 1:
+    #         next_beam.append((next_state, next_stall_states, postfixes))
+    #         logger.debug(
+    #             f"SELECTED {len(next_beam)-1} {' ||| '.join([next_beam[-1][0].outputs[_][1].token for _ in range(num_models)])}"
+    #         )
+
+    # logger.debug(f"VISITED_STATES: {len(visited)}")
 
