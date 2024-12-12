@@ -462,14 +462,13 @@ def get_sample_output_extensions(
     
     if force_stop:
         # out = next_token_scores + beam_score
-        mask = torch.full(next_token_scores.shape, float('-inf'))
+        mask = torch.full(next_token_scores.shape, float('-inf')).to(device)
         mask[eos_token_id] = 0
         return next_token_scores + beam_score + mask
         # return [[(next_token_scores + beam_score)[eos_token_id]], torch.tensor([eos_token_id], dtype=torch.long, device=device)]
 
     if stalled:
         return beam_score.view(1, 1)
-        return [[beam_score], torch.tensor([-1], dtype=torch.long, device=device)]
     
     # If a trie was constructed, select the top-k tokens that are in the trie (limits sort and search space)
     # if trie:
