@@ -294,7 +294,9 @@ def ensemble_sample(
             weights: List[float],
             num_samples: int = 1,
             max_length : int = -1,
-            trie: bool = False):
+            temperature: float = 1.0,
+            top_k: int = 50,
+            top_p: float = 0.95):
     r"""
     Adapted from `~transformers.generation_utils.GenerationMixin.sample` to accept a list of input_ids
 
@@ -311,7 +313,7 @@ def ensemble_sample(
 
     for model_i, model in enumerate(models):
         # Initialize each model with the input
-        model.set_input(batch[model_i], num_samples, max_length)
+        model.set_input(batch[model_i], num_samples, max_length, sample=True)
     
     # Hypotheses on beams across models are always consistent, but one may be shorter than another.
     # We keep track of which model is stalled for any given beam/hypothesis item
@@ -354,7 +356,6 @@ def ensemble_sample(
                     model.eos_token_ids[0],
                     device=device,
                     model=model,
-                    trie=trie,
                     postfix=postfixes[beam_i][model_i],
                     force_stop = force_stop         
                 )
@@ -374,7 +375,10 @@ def ensemble_sample(
                     weights = weights,
                     stalled_states = stalled_states[batch_i * num_samples: (batch_i + 1) * num_samples],
                     max_length = max_length,
-                    postfixes=postfixes
+                    postfixes=postfixes,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p
                 )
 
                 # If we have any items that have been completed, we need to add them to the completed list
@@ -457,16 +461,21 @@ def get_sample_output_extensions(
         force_stop : bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
     
     if force_stop:
-        return [[(next_token_scores + beam_score)[eos_token_id]], torch.tensor([eos_token_id], dtype=torch.long, device=device)]
+        # out = next_token_scores + beam_score
+        mask = torch.full(next_token_scores.shape, float('-inf'))
+        mask[eos_token_id] = 0
+        return next_token_scores + beam_score + mask
+        # return [[(next_token_scores + beam_score)[eos_token_id]], torch.tensor([eos_token_id], dtype=torch.long, device=device)]
 
     if stalled:
+        return beam_score.view(1, 1)
         return [[beam_score], torch.tensor([-1], dtype=torch.long, device=device)]
     
     # If a trie was constructed, select the top-k tokens that are in the trie (limits sort and search space)
-    if trie:
-        if postfix != "":
-            mask = model.trie.search_key_inf_mask(postfix).to(device)
-            return (next_token_scores + mask + beam_score)
+    # if trie:
+    #     if postfix != "":
+    #         mask = model.trie.search_key_inf_mask(postfix).to(device)
+    #         return (next_token_scores + mask + beam_score)
 
     # need to somehow expand this
     return (next_token_scores + beam_score)
@@ -543,7 +552,9 @@ def ensemble_models(args):
                         weights,
                         num_samples = args.num_samples,
                         max_length = args.max_length,
-                        trie = args.trie)
+                        temperature = args.temperature,
+                        top_k = args.top_k,
+                        top_p = args.top_p)
 
         print_output(outputs, args, ostream)
 
@@ -562,7 +573,7 @@ if __name__ == "__main__":
     parser.add_argument("--models", '-m', type=str, help='Models to ensemble', nargs='+', default=["facebook/nllb-200-distilled-600M", "facebook/m2m100_418M"])
     parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')
 
-    parser.add_argument("--batch-size", '-t', type=int, help='Batch size for inference', default=1)
+    parser.add_argument("--batch-size", '-bs', type=int, help='Batch size for inference', default=1)
     parser.add_argument("--max-length", '-l', type=int, help='Maximum length of the output', default=100)
     parser.add_argument("--score", '-s', action='store_true', help='Output the score of each model')
 
@@ -583,6 +594,9 @@ if __name__ == "__main__":
     # Add a sample search subparser
     parser_sample = search.add_parser('sample', help='Sample search')
     parser_sample.add_argument("--num-samples", '-n', type=int, help='Number of samples', default=1)
+    parser_sample.add_argument("--temperature", '-t', type=float, help="Temperature for sampling", default=1.0)
+    parser_sample.add_argument("--top-k", '-k', type=int, help="Top-k sampling", default=-1)
+    parser_sample.add_argument("--top-p", '-p', type=float, help="Top-p sampling", default=1.0)
 
     args = parser.parse_args()
 

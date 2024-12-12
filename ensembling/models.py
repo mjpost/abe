@@ -129,6 +129,7 @@ class Model:
                     batch: List[dict],
                     num_beams: int,
                     max_length: int,
+                    sample = False
                 ):
         """
         Tokenize and encode the input. For seq2seq models, store the encoder outputs
@@ -172,8 +173,11 @@ class Model:
 
         # Initialize the scores of the beams
         self.beam_scores = torch.zeros((self.batch_size, num_beams), dtype=torch.float, device=self.device)
+
         # For the first step, only one beam is valid--set all other so that they are never chosen
-        self.beam_scores[:, 1:] = -1e9
+        if not sample:
+            self.beam_scores[:, 1:] = -1e9
+
         # Flatten so beams are in batch_beam format
         self.beam_scores = self.beam_scores.view((self.batch_size * num_beams,))
         self.beam_token_scores = [[] for _ in range(self.batch_beam_size)]

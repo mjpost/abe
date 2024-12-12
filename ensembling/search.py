@@ -278,6 +278,9 @@ def sample_search(
         max_length,
         stalled_states,
         postfixes,
+        temperature=1.0,
+        top_k=-1,
+        top_p=1.0,
         ):
     
     next_samples = []
@@ -293,28 +296,59 @@ def sample_search(
         must_terminate = False
         for model_i, model in enumerate(models):
             probs = paired_outputs[batch_offset + sample_i][model_i]
-            if stalled_states[sample_i][model_i]:
+            if must_terminate:
+                sample_id = model.eos_token_ids[0]
+                extension = candidate_strings[model_i]
+            elif stalled_states[sample_i][model_i]:
                 # should just be a pad item
                 sample_id = -1
                 extension = candidate_strings[model_i]
-            elif must_terminate:
-                sample_id = model.eos_token_ids[0]
-                extension = candidate_strings[model_i]
             else:
                 mask = model.trie.search_key_inf_mask(postfix[model_i], allow_root=False).to(model.device)
-                probs += mask
-                sample_id = torch.multinomial(softmax(probs, dim=-1), 1).item()
+                adjusted_probs = probs + mask
+                
+                # adjust by temperature
+                adjusted_probs /= temperature
+                sorted_logits, sorted_indices = torch.sort(adjusted_probs, descending=True)
 
-                # special case for eos token
-                if sample_id in model.eos_token_ids:
+                if top_p > 0.0:
+                    cumulative_probs = torch.cumsum(softmax(sorted_logits, dim=-1), dim=-1)
+                    sorted_indices_to_remove = cumulative_probs > top_p
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+                    indices_to_remove = torch.zeros_like(adjusted_probs, dtype=torch.bool).scatter_(dim=-1, index=sorted_indices, src=sorted_indices_to_remove)
+                    adjusted_probs[indices_to_remove] = float('-inf')                  
+                if top_k > 0:
+                    adjusted_probs[sorted_indices[top_k:]] = float('-inf')
+
+                logger.debug(f"Sample {sample_i} | Model {model_i} : {sum(adjusted_probs > -float('inf'))} tokens are not masked")
+                if logger.level == logging.DEBUG:
+                    e_prob, e_ind = torch.sort(softmax(adjusted_probs, dim=-1), descending=True)
+                    for i, (val, ind) in enumerate(zip(e_prob, e_ind)):
+                        if i > 50:
+                            break
+                        if val == 0:
+                            break
+                        logger.debug(f"Sample {sample_i} | Model {model_i} : eligible token '{model.id_to_token(ind.item())}' with score {val.item()} based on postfix { postfix[model_i]}")
+
+                # If there are *no* eligible extensions (typically at max length)
+                if sum(adjusted_probs > float('-inf')) == 0:
+                    sample_id = model.eos_token_ids[0]
+                    extension = candidate_strings[model_i]
                     must_terminate = True
+                else:
+                    sample_id = torch.multinomial(softmax(adjusted_probs, dim=-1), 1).item()
 
-                extension = model.extend_beam_string(batch_offset+sample_i, sample_id)
-                candidate_strings[model_i] = extension
-                if len(extension) > len(leading_string):
-                    leading_string = extension
-                if model_i < num_models - 1:
-                    postfix[model_i+1] = leading_string[len(candidate_strings[model_i+1]):]
+                    # special case for eos token
+                    if sample_id in model.eos_token_ids:
+                        must_terminate = True
+
+                    extension = model.extend_beam_string(batch_offset+sample_i, sample_id)
+                    candidate_strings[model_i] = extension
+                    if len(extension) > len(leading_string):
+                        leading_string = extension
+                    if model_i < num_models - 1:
+                        postfix[model_i+1] = leading_string[len(candidate_strings[model_i+1]):]
             next_outputs.append(
                 (
                     sample_id,
@@ -361,7 +395,9 @@ def sample_search(
             min_string_length = min([len(cand) for cand in candidate_strings])
             for model_i, cand in enumerate(candidate_strings):
                 next_postfixes.append(leading_string[len(cand):])
-                if min_string_length == len(leading_string):
+                if len(models[model_i].generated_tokens[sample_i]) > 0 and models[model_i].generated_tokens[sample_i][-1] in models[model_i].eos_token_ids:
+                    next_stall_states.append(True)
+                elif min_string_length == len(leading_string):
                     next_stall_states.append(False)
                 else:
                     next_stall_states.append(len(cand) == len(leading_string))
