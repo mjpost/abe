@@ -420,9 +420,6 @@ class FastTokenizer():
         if self.lstrip:
             bytes = " ".encode('utf-8') + bytes
         return bytes
-        # if self.lstrip and len(bytes) > 0 and bytes[0] == 32: # we only wanna remove the first space
-        #     return bytes[1:]
-        # return bytes
     
 
 ########################################################################################################

@@ -124,7 +124,7 @@ def ensemble_beam_search(
             if continue_search[batch_i]:
 
                 # This is our current best hypothesis. We don't want to continue our search if we every pass this score
-                max_score = max(beam_completed[batch_i]).raw_score() if len(beam_completed[batch_i]) > 0 else -math.inf
+                max_score = max(beam_completed[batch_i]).score() if len(beam_completed[batch_i]) > 0 else -math.inf
                 next_batch_beam, completed_beams = beam_search(
                     batch_offset = batch_i * num_beams,
                     num_beams = num_beams,
@@ -134,7 +134,7 @@ def ensemble_beam_search(
                     completed_beams = len(beam_completed[batch_i]),
                     stalled_states = stalled_states[batch_i * num_beams: (batch_i + 1) * num_beams],
                     max_length = max_length,
-                    max_score = max_score
+                    max_score = max_score,
                 )
 
                 # if the search returned less then the number of beams, there was some early stop criteria
@@ -161,7 +161,7 @@ def ensemble_beam_search(
                     continue_search[batch_i] = False
 
                 # or if the best hypothesis is already worse than the worst completed beam
-                if len(beam_completed[batch_i]) > 0 and next_batch_beam[0][0].raw_score() < max(beam_completed[batch_i]).raw_score():
+                if len(beam_completed[batch_i]) > 0 and next_batch_beam[0][0].score() < max(beam_completed[batch_i]).score():
                     continue_search[batch_i] = False
 
                 for beam_i, beam in enumerate(next_batch_beam):
@@ -192,7 +192,7 @@ def ensemble_beam_search(
         # TODO: if a hypothesis is incomplete (because max length has been reached, this will error due to the padding values)
         # TODO: fill in the dummy function in utils and call here when applicable
 
-        sorted_completions = sorted(completed, key=lambda x: x.raw_score(), reverse=True)
+        sorted_completions = sorted(completed, key=lambda x: x.score(), reverse=True)
         if len(sorted_completions) == 0:
             logger.info("Unable to find any completions under given criteria. Attempt to increase your maximum size and try again")
             outputs.append({})
@@ -281,10 +281,6 @@ def get_sorted_output_extensions(
 
     # need to somehow expand this
     return torch.sort(next_token_scores + beam_score, descending=True)
-
-
-
-
 
 
 
@@ -528,7 +524,7 @@ def ensemble_models(args):
     if args.trie:
         build_tries(models)
     end = time.time()
-    print(f"Time to load models: {end - start}", file=sys.stderr)
+    logger.info(f"Time to load models: {end - start}")
     istream = open(args.input, 'r') if args.input else sys.stdin
     ostream = open(args.output, 'w') if args.output else sys.stdout
 
@@ -573,7 +569,7 @@ if __name__ == "__main__":
     parser.add_argument("--weights", '-w', type=float, help='Weights for each model', nargs='+')
 
     parser.add_argument("--batch-size", '-bs', type=int, help='Batch size for inference', default=1)
-    parser.add_argument("--max-length", '-l', type=int, help='Maximum length of the output', default=100)
+    parser.add_argument("--max-length", '-l', type=int, help='Maximum length of the output', default=256)
     parser.add_argument("--score", '-s', action='store_true', help='Output the score of each model')
 
     parser.add_argument("--trie", default=False, action='store_true', help='Use trie for finding extensions')

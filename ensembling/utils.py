@@ -144,6 +144,7 @@ def compatibility(models, next_state):
 
     # first we check if there are sentences that have ended
     eos_endings = [model.is_eos(next_state.outputs[model_i][1].idx) for model_i, model in enumerate(models)]
+
     # if any strings have ended, compatibility must be:
     # - exactly equal for finished strings
     # - substring only for unfinished strings
@@ -206,15 +207,15 @@ TOKENIZER_CONFIG = {
         "begin_word": True,
         "byte_map": BYTE_MAP,
     },
-    "rewicks/baseline_en-de_64k_ep25": {
+    "facebook/m2m100_418M": {
         "lstrip": False,
         "special_character": SPIECE_UNDERLINE,
         "begin_word": True,
         "byte_map": BYTE_MAP,
     },
-    "openai-community/gpt2": {
-        "lstrip": True,
-        "special_character": GPIECE,
+    "rewicks/baseline_en-de_64k_ep25": {
+        "lstrip": False,
+        "special_character": SPIECE_UNDERLINE,
         "begin_word": True,
         "byte_map": BYTE_MAP,
     }

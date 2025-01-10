@@ -5,7 +5,98 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "ensemble",
+            "name": "ensemble beam",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "ensembling/ensemble.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-i",
+                "en-de-x-en-de-test",
+                "-l",
+                "512",
+                "-s",
+                "-m",
+                "rewicks/baseline_en-de_64k_ep25",
+                "rewicks/baseline_en-de_8k_ep25",
+                "--debug",
+                "--cpu",
+                "beam"
+            ]
+        },
+        {
+            "name": "ensemble m2m nllb",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "ensembling/ensemble.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-i",
+                "m2m-x-nllb-test",
+                "-l",
+                "512",
+                "-s",
+                "-m",
+                "facebook/m2m100_418M",
+                "facebook/nllb-200-distilled-600M",
+                "--debug",
+                "--cpu",
+                "beam"
+            ]
+        },
+        {
+            "name": "ensemble sample",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "ensembling/ensemble.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-i",
+                "rachel-input-test",
+                "-l",
+                "4",
+                // "-s",
+                "-m",
+                "rewicks/baseline_en-de_64k_ep25",
+                "rewicks/monolingual_de_8k-shared_ep19",
+                "--debug",
+                "--cpu",
+                "sample",
+                "--num-samples",
+                "2",
+                "--top-k",
+                "-1",
+                "--top-p",
+                "1.0",
+                "--temperature",
+                "1.0"
+            ]
+        },
+        {
+            "name": "error",
+            "type": "debugpy",
+            "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
+            "request": "launch",
+            "program": "ensembling/ensemble.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-i",
+                "error-test",
+                "-l",
+                "5",
+                "-s",
+                "--debug",
+                "--cpu",
+                "-m",
+                "rewicks/baseline_en-de_64k_ep25",
+                "rewicks/monolingual_de_8k-shared_ep19"
+            ]
+        },
+        {
+            "name": "trie",
             "type": "debugpy",
             "python": "/home/hltcoe/rwicks/.conda/envs/ensemble311/bin/python3.11",
             "request": "launch",
@@ -21,7 +112,8 @@
                 "--cpu",
                 "-m",
                 "rewicks/baseline_en-de_64k_ep25",
-                "rewicks/monolingual_de_8k-shared_ep19"
+                "rewicks/monolingual_de_8k-shared_ep19",
+                "--trie"
             ]
         },
         {
@@ -34,14 +126,15 @@
             "args": [
                 "-i",
                 "gpt2-input-test",
-                "-l",
-                "512",
                 "-s",
                 "--debug",
                 "--cpu",
                 "-m",
                 "facebook/nllb-200-distilled-600M",
-                "openai-community/gpt2"
+                "openai-community/gpt2",
+                "-l",
+                "512",
+                "beam"
             ]
         },
         {
