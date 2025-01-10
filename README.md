@@ -100,3 +100,12 @@ sacrebleu -t wmt14 -l en-fr --echo src ref | python unit-tests.py
 We'll use this to determine logprobs for unit tests.
 
 ## Code Review:
+
+
+## Jan 10 Minimal Reproducible Examples
+
+1. EN-DE X EN-DE
+    a. paste `<(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/bilingual-no-tags) > en-de-input`
+    b. OR paste `<(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/bilingual-no-tags) > en-de-x-en-de-test`
+    c. TO RUN: `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 rewicks/baseline_en-de_8k_ep25 -i en-de-x-en-de-test --debug bea`
+
