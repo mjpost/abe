@@ -43,11 +43,18 @@
                 "512",
                 "-s",
                 "-m",
+<<<<<<< HEAD
                 "facebook/m2m100_418M",
                 "facebook/nllb-200-distilled-600M",
                 "--debug",
                 "--cpu",
                 "--half",
+=======
+                "rewicks/baseline_en-de_64k_ep25",
+                "rewicks/monolingual_de_8k-shared_ep19",
+                "--debug",
+                "--cpu",
+>>>>>>> 56238ac2f60e4eadb2b7e8e47ff970864f553945
                 "beam"
             ]
         },

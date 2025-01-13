@@ -104,6 +104,7 @@ We'll use this to determine logprobs for unit tests.
 
 ## Jan 10 Minimal Reproducible Examples
 
+<<<<<<< HEAD
 1. EN-DE X EN-DE (RACHEL)
     a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/bilingual-no-tags) > en-de-input`
     b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/bilingual-no-tags) > en-de-x-en-de-test`
@@ -130,4 +131,10 @@ We'll use this to determine logprobs for unit tests.
     a. `paste <(echo "This is a test." | python ensembling/build/prompt tower English German) <(echo "This is a test." | python ensembling/build/prompt llama3 English German) > tests/tower-x-llama3-test`
     b. `python ensembling/ensemble.py -m Unbabel/TowerInstruct-7B-v0.1 meta-llama/Meta-Llama-3-8B-Instruct -i tests/tower-x-llama3-test --half beam`
 
+=======
+1. EN-DE X EN-DE
+    a. paste `<(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/bilingual-no-tags) > en-de-input`
+    b. OR paste `<(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/bilingual-no-tags) > en-de-x-en-de-test`
+    c. TO RUN: `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 rewicks/baseline_en-de_8k_ep25 -i en-de-x-en-de-test --debug bea`
+>>>>>>> 56238ac2f60e4eadb2b7e8e47ff970864f553945
 
