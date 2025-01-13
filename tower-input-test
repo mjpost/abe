@@ -1,1 +1,0 @@
-{"encoder_bos_tokens": ["eng_Latn"], "decoder_bos_tokens": ["fra_Latn"], "encoder_inputs": "This is a test"}	{"decoder_inputs": "<|im_start|>user\nTranslate the following text from English into French.\nEnglish: This is a test\nFrench:<|im_end|>\n<|im_start|>assistant\n"}

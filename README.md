@@ -109,7 +109,7 @@ We'll use this to determine logprobs for unit tests.
     b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/bilingual-no-tags) > en-de-x-en-de-test`
     c. TO RUN: `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 rewicks/baseline_en-de_8k_ep25 -i en-de-x-en-de-test --debug beam`
 2. EN-DE X M2M (KARTIK/XINCHEN) FLORES
-    a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/src-tgt en de) > en-de-input`
+    a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/src-tgt __en__ __de__) > en-de-input`
     b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/src-tgt en de) > en-de-x-m2m-test`
     c. `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 facebook/m2m100_418M -i en-de-x-en-de-test --debug beam`
 3. EN-DE X NLLB (KARTIK/XINCHEN) FLORES
@@ -117,12 +117,17 @@ We'll use this to determine logprobs for unit tests.
     b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/src-tgt eng_Latn deu_Latn) > en-de-x-nllb-test`
     c. `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 facebook/nllb-200-distilled-600M -i en-de-x-nllb-test --debug beam`
 4. M2M X NLLB (KARTIK/XINCHEN) FLORES
-    a.`paste <(cat inputs/src | python ensembling/build/src-tgt en fr) <(cat inputs/src | python ensembling/build/src-tgt eng_Latn fra_Latn) > en-de-input`
-    b. OR `paste <(echo "This is a test." | python ensembling/build/src-tgt en fr) <(echo "This is a test." | python ensembling/build/src-tgt eng_Latn fra_Latn) > m2m-x-nllb-test`
+    a.`paste <(cat inputs/src | python ensembling/build/src-tgt __en__ __de__) <(cat inputs/src | python ensembling/build/src-tgt eng_Latn deu_Latn) > en-de-input`
+    b. OR `paste <(echo "This is a test." | python ensembling/build/src-tgt __en__ __de__) <(echo "This is a test." | python ensembling/build/src-tgt eng_Latn deu_Latn) > m2m-x-nllb-test`
     c. `python ensembling/ensemble.py -m facebook/m2m100_418M facebook/nllb-200-distilled-600M -i m2m-x-nllb-test --debug beam`
 5. EN-DE X TOWER
-    a. 
-    b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test" | ensembling/build/prompt tower English French) > en-de-x-tower-test`
+    a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/prompt tower English French) > en-de-input`
+    b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test" | python ensembling/build/prompt tower English German) > en-de-x-tower-test`
     c. `python ensembling/ensemble.py -m rewicks/baseline_en-de_8k_ep25 Unbabel/TowerInstruct-7B-v0.1 -i en-de-x-tower-test --debug --half beam`
+6. EN-DE X LLAMA3
+    a. `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/prompt llama3 English German) > en-de-x-llama3-test`
+7. TOWER X LLAMA3
+    a. `paste <(echo "This is a test." | python ensembling/build/prompt tower English German) <(echo "This is a test." | python ensembling/build/prompt llama3 English German) > tests/tower-x-llama3-test`
+    b. `python ensembling/ensemble.py -m Unbabel/TowerInstruct-7B-v0.1 meta-llama/Meta-Llama-3-8B-Instruct -i tests/tower-x-llama3-test --half beam`
 
 

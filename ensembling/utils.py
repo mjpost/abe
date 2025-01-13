@@ -182,7 +182,7 @@ def compatibility(models, next_state):
         return -1, None, None
 
 
-def tokenize(tokenizer, bos_tokens=None, inputs=None):
+def tokenize(tokenizer, bos_tokens=None, inputs=None, eos=True):
     out = []
     if bos_tokens is not None:
         out += tokenizer.convert_tokens_to_ids(bos_tokens)
@@ -191,7 +191,10 @@ def tokenize(tokenizer, bos_tokens=None, inputs=None):
             sys.exit(-1)
         logger.debug(f"ids for BOS: {out}")
     if inputs is not None:
-        tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(inputs) + [tokenizer.eos_token])
+        if eos:
+            tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(inputs) + [tokenizer.eos_token])
+        else:
+            tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(inputs))
         out += tokens
         logger.debug(f"Tokenized input: {tokens}")
     return out
@@ -206,17 +209,34 @@ TOKENIZER_CONFIG = {
         "special_character": SPIECE_UNDERLINE,
         "begin_word": True,
         "byte_map": BYTE_MAP,
+        "add_space": True
     },
     "facebook/m2m100_418M": {
         "lstrip": False,
         "special_character": SPIECE_UNDERLINE,
         "begin_word": True,
         "byte_map": BYTE_MAP,
+        "add_space": True
     },
     "rewicks/baseline_en-de_64k_ep25": {
         "lstrip": False,
         "special_character": SPIECE_UNDERLINE,
         "begin_word": True,
         "byte_map": BYTE_MAP,
+        "add_space": True
+    },
+    "meta-llama/Meta-Llama-3-8B-Instruct": {
+        "lstrip": False,
+        "special_character": GPIECE,
+        "begin_word": True,
+        "byte_map": BYTE_MAP,
+        "add_space": False
+    },
+    "meta-llama/Llama-3.2-3B-Instruct": {
+        "lstrip": False,
+        "special_character": GPIECE,
+        "begin_word": True,
+        "byte_map": BYTE_MAP,
+        "add_space": False
     }
 }

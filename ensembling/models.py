@@ -65,7 +65,8 @@ class Model:
                                                   lstrip = TOKENIZER_CONFIG.get(self.model_name, {}).get("lstrip", False),
                                                     special_character = TOKENIZER_CONFIG.get(self.model_name, {}).get("special_character", '\u2581'),
                                                     begin_word = TOKENIZER_CONFIG.get(self.model_name, {}).get("begin_word", True),
-                                                    byte_map = TOKENIZER_CONFIG.get(self.model_name, {}).get("byte_map", BYTE_MAP)
+                                                    byte_map = TOKENIZER_CONFIG.get(self.model_name, {}).get("byte_map", BYTE_MAP),
+                                                    add_space = TOKENIZER_CONFIG.get(self.model_name, {}).get("add_space", True)
                                                 )
 
         self.model = model
@@ -141,7 +142,7 @@ class Model:
                 # BOS tokens are *already* tokenized special ids
                 # There may be a variant of this going forward where we pass the ids instead
                 logger.debug(f"Tokenizing encoder inputs for batch {batch_i}")
-                bos_tokens[batch_i] = tokenize(self.source_tokenizer, bos_tokens=item.get('encoder_bos_tokens', None), inputs=item.get('encoder_inputs', None))
+                bos_tokens[batch_i] = tokenize(self.source_tokenizer, bos_tokens=item.get('encoder_bos_tokens', None), inputs=item.get('encoder_inputs', None), eos=True)
 
                 # You must pass either BOS tokens or encoder inputs
                 assert len(bos_tokens[batch_i]) > 0, "No encoder inputs provided"
@@ -194,7 +195,7 @@ class Model:
         # It follows the same structure as the encoder inputs
         for batch_i, item in enumerate(batch):
             logger.debug(f"Tokenizing decoder inputs for batch {batch_i}")
-            bos_tokens = tokenize(self.target_tokenizer, bos_tokens=item.get('decoder_bos_tokens', None), inputs=item.get('decoder_inputs', None))
+            bos_tokens = tokenize(self.target_tokenizer, bos_tokens=item.get('decoder_bos_tokens', None), inputs=item.get('decoder_inputs', None), eos=False)
             logger.debug(f"Decoder inputs: {bos_tokens}")
             # We must initialize each beam for each item in the batch
             offset = batch_i * self.num_beams
@@ -389,15 +390,16 @@ class Model:
 
 
 class FastTokenizer():
-    def __init__(self, original_tokenizer, lstrip=False, special_character='\u2581', begin_word=True, byte_map=BYTE_MAP):
+    def __init__(self, original_tokenizer, lstrip=False, special_character='\u2581', begin_word=True, add_space=True, byte_map=BYTE_MAP):
         self.vocab = []
         for tok, tok_id in sorted(original_tokenizer.get_vocab().items(), key=lambda kv: kv[1]):
             if tok_id not in original_tokenizer.all_special_ids and tok not in byte_map:
                 byte_tok = ""
-                if begin_word and tok.startswith(special_character):
-                    byte_tok += " "
-                elif (not begin_word) and (not tok.startswith(special_character)):
-                    byte_tok += " "
+                if add_space:
+                    if begin_word and tok.startswith(special_character):
+                        byte_tok += " "
+                    elif (not begin_word) and (not tok.startswith(special_character)):
+                        byte_tok += " "
                 byte_tok += original_tokenizer.decode(tok_id)
                 self.vocab.append(byte_tok.encode('utf-8'))
             elif tok in byte_map:

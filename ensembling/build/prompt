@@ -16,9 +16,15 @@ else:
     TARGET = None
 
 TOWER = "<|im_start|>user\nTranslate the following text from ```SOURCE``` into ```TARGET```.\n```SOURCE```: ```INPUT_TEXT```\n```TARGET```:<|im_end|>\n<|im_start|>assistant\n"
+#LLAMA3 = "'<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\nYou are a pirate chatbot who always responds in pirate speak!<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWho are you?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n'"
+
+LLAMA3 = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nTranslate the following segment into ```TARGET```. The ```SOURCE``` segment: ```INPUT_TEXT```<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+
 
 if prompt == "tower":
     template = TOWER
+elif prompt == "llama3":
+    template = LLAMA3
 
 for line in sys.stdin:
     if SOURCE is not None:

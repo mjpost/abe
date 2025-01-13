@@ -1,0 +1,1 @@
+{"encoder_bos_tokens": ["__en__"], "decoder_bos_tokens": ["__de__"], "encoder_inputs": "This is a test."}	{"decoder_inputs": "<|im_start|>user\nTranslate the following text from English into German.\nEnglish: This is a test.\nGerman:<|im_end|>\n<|im_start|>assistant\n"}

@@ -37,5 +37,3 @@ print("First ten probabilities of the first sequence for each token with padding
 for tok in long_outputs.scores:
     print(" ".join([str(_.item()) for _ in tok[0, :10]]))
 
-
-breakpoint()

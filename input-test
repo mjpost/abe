@@ -1,1 +1,0 @@
-{"encoder_bos_tokens": ["eng_Latn"], "decoder_bos_tokens": ["fra_Latn"], "encoder_inputs": "This is a test."}	{"encoder_bos_tokens": ["<|endoftext|>"], "decoder_bos_tokens": ["<|endoftext|>"], "decoder_inputs": "This is a test."}

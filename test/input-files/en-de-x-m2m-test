@@ -1,0 +1,1 @@
+{"encoder_inputs": "This is a test."}	{"encoder_bos_tokens": ["__en__"], "decoder_bos_tokens": ["__de__"], "encoder_inputs": "This is a test."}

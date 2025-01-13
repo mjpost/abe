@@ -201,7 +201,7 @@ def ensemble_beam_search(
         scores = [_.item() for _ in best_completion.scores]
         output_tokens = [model.target_tokenizer.convert_ids_to_tokens(best_completion.output_ids[model_i]) for model_i, model in enumerate(models)]
         combined_score = best_completion.raw_score().item()
-        out_str = models[0].target_tokenizer.decode(best_completion.output_ids[0], skip_special_tokens=True)
+        out_str = models[0].target_tokenizer.decode(best_completion.output_ids[0][-len(best_completion.token_scores[0]):], skip_special_tokens=True)
        
         for model_i, model in enumerate(models):
             ids = best_completion.output_ids[model_i]
@@ -301,6 +301,9 @@ def ensemble_sample(
     - Beam search support:
         https://github.com/huggingface/transformers/blob/main/src/transformers/generation/beam_search.py
     """
+
+    # Clear the gpu memory
+    torch.cuda.empty_cache()
 
     num_models = len(models)
     device = models[0].model.device
