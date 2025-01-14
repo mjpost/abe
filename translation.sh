@@ -1,3 +1,14 @@
+# For sorting/file reasons let's have
+# llama > tower > nllb > m2m > rachel's models
+# rachel 64k > rachel 32k
+# put the smaller model first
+# i.e., run
+# bash translation.sh rachel-32k rachel-64k en-de test, bash translation.sh rachel-32k llama3 en-de test
+# NOT
+# bash translation.sh rachel-64k rachel-32k en-de test, bash translation.sh llama3 rachel-32k en-de test
+
+
+
 MODEL_ONE=$1
 MODEL_TWO=$2
 LANGUAGE_PAIR=$3
