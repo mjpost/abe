@@ -535,6 +535,8 @@ def ensemble_models(args):
     
     start = time.time()
     for i, batch in enumerate(batches):
+        # empty cuda cache
+        torch.cuda.empty_cache()
         if args.command == 'beam':
             outputs = ensemble_beam_search(
                         batch,

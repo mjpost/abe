@@ -238,5 +238,12 @@ TOKENIZER_CONFIG = {
         "begin_word": True,
         "byte_map": BYTE_MAP,
         "add_space": False
-    }
+    },
+    "meta-llama/Llama-3.2-1B-Instruct": {
+        "lstrip": False,
+        "special_character": GPIECE,
+        "begin_word": True,
+        "byte_map": BYTE_MAP,
+        "add_space": False
+    },
 }
