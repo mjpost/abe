@@ -19,4 +19,4 @@ TESTSET=$4
 conda deactivate
 conda activate ensemble311
 
-bash translations.sh $MODEL_ONE $MODEL_TWO $LANGUAGE_PAIR $TESTSET
+bash translation.sh $MODEL_ONE $MODEL_TWO $LANGUAGE_PAIR $TESTSET

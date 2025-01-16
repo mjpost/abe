@@ -15,16 +15,58 @@ else:
     SOURCE = None
     TARGET = None
 
+# Translate the following text from English into German. The English Segment: <-- how it's been finetuned
 TOWER = "<|im_start|>user\nTranslate the following text from ```SOURCE``` into ```TARGET```.\n```SOURCE```: ```INPUT_TEXT```\n```TARGET```:<|im_end|>\n<|im_start|>assistant\n"
 #LLAMA3 = "'<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\nYou are a pirate chatbot who always responds in pirate speak!<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWho are you?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n'"
 
-LLAMA3 = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nTranslate the following segment into ```TARGET```. The ```SOURCE``` segment: ```INPUT_TEXT```<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+# ??
+# 
+# LLAMA3 = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nTranslate the following segment into ```TARGET```. The ```SOURCE``` segment: ```INPUT_TEXT```<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+LLAMA3_ZERO_SHOT = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\
+Cutting Knowledge Date: December 2023\n Today Date: 26 Jul 2024\n\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nTranslate the following segment into ```TARGET```. Do not add any additional content. Do not add parentheticals. Only provide the translation. The ```SOURCE``` segment: ```INPUT_TEXT```<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nThe ```TARGET``` segment:"
+LLAMA3_THREE_SHOT = "<|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\
+Cutting Knowledge Date: December 2023\n Today Date: 26 Jul 2024\n\n<|eot_id|>\
+<|start_header_id|>user<|end_header_id|>\n\nTranslate the following text from English into German. Do not add any additional content. Do not add parentheticals. Only provide the translation. The English Segment: White nationalists, gun fetishists, pro-dictator right wing.. there\'s the danger. Deport the white supremacists.<|eot_id|> \
+<|start_header_id|>assistant<|end_header_id|>\n\nThe German Segment: Weiße Nationalisten, Waffenfetischisten, Diktator-Freundliche vom rechten Flügel … da liegt die Gefahr. Deportiert die weißen Rassisten.<|eot_id|>\
+<|start_header_id|>user<|end_header_id|>\n\nTranslate the following text from English into German. Do not add any additional content. Do not add parentheticals. Only provide the translation. The English Segment: It\'s 2023 and I still see people with iPhones actively avoid using Apple Maps.<|eot_id|>\
+<|start_header_id|>assistant<|end_header_id|>\n\nThe German Segment: Es ist 2023 und ich sehe immer noch Menschen mit iPhones, die aktiv die Verwendung von Apple Maps vermeiden.<|eot_id|>\
+<|start_header_id|>user<|end_header_id|>\n\nTranslate the following text from English into German. Do not add any additional content. Do not add parentheticals. Only provide the translation. The English Segment: #CNN needs to just close down. Yesterday\'s fiasco with #MangoMoron was an outrageous fiasco. Who at that pathetic, dying network was responsible for vetting the so-called \"independent voter\" in the audience? Which cable news \"executive\" made the call to give the fat, lying criminal this much air-time?<|eot_id|>\
+<|start_header_id|>assistant<|end_header_id|>\n\nThe German Segment: #CNN muss einfach den Laden dichtmachen. Das Fiasko von gestern mit #MangoMoron war einfach ungeheuerlich. Wer war bei diesem jämmerlichen, im Sterben liegenden Sender eigentlich für die Überprüfung der sogenannten „unabhängigen Wähler“ im Publikum verantwortlich? Welcher Kabelnachrichten-„Verantwortliche“ hat denn die Entscheidung getroffen, dem fetten, lügenden Kriminellen so viel Sendezeit zu geben?<|eot_id|>\
+<|start_header_id|>assistant<|end_header_id|>\n\n<|start_header_id|>user<|end_header_id|>\n\nTranslate the following segment into ```TARGET```. Do not add any additional content. Do not add parentheticals. Only provide the translation. The ```SOURCE``` segment: ```INPUT_TEXT```<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nThe ```TARGET``` segment:"
+"""
+# <|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nTranslate the following text from English into German. The English Segment: White nationalists, gun fetishists, pro-dictator right wing.. there\'s the danger. Deport the white supremacists.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nThe German Segment: Weiße Nationalisten, Waffenfetischisten, Diktator-Freundliche vom rechten Flügel … da liegt die Gefahr. Deportiert die weißen Rassisten.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nTranslate the following text from English into German. The English Segment: It\'s 2023 and I still see people with iPhones actively avoid using Apple Maps.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nThe German Segment: Es ist 2023 und ich sehe immer noch Menschen mit iPhones, die aktiv die Verwendung von Apple Maps vermeiden.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nTranslate the following text from English into German. The English Segment: #CNN needs to just close down. Yesterday\'s fiasco with #MangoMoron was an outrageous fiasco. Who at that pathetic, dying network was responsible for vetting the so-called "independent voters" in the audience? Which cable news "executive" made the call to give the fat, lying criminal this much air-time?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nThe German Segment: #CNN muss einfach den Laden dichtmachen. Das Fiasko von gestern mit #MangoMoron war einfach ungeheuerlich. Wer war bei diesem jämmerlichen, im Sterben liegenden Sender eigentlich für die Überprüfung der sogenannten „unabhängigen Wähler“ im Publikum verantwortlich? Welcher Kabelnachrichten-„Verantwortliche“ hat denn die Entscheidung getroffen, dem fetten, lügenden Kriminellen so viel Sendezeit zu geben?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"""
 
+# messages = [
+#     {"role": "user", "content": "Translate the following text from English into German. The English Segment: White nationalists, gun fetishists, pro-dictator right wing.. there's the danger. Deport the white supremacists."},
+#     {"role": "assistant", "content": "The German Segment: Weiße Nationalisten, Waffenfetischisten, Diktator-Freundliche vom rechten Flügel … da liegt die Gefahr. Deportiert die weißen Rassisten."},
+#     {"role": "user", "content": "Translate the following text from English into German. The English Segment: It's 2023 and I still see people with iPhones actively avoid using Apple Maps."},
+#     {"role": "assistant", "content": "The German Segment: Es ist 2023 und ich sehe immer noch Menschen mit iPhones, die aktiv die Verwendung von Apple Maps vermeiden."},
+#     {"role": "user", "content": "Translate the following text from English into German. The English Segment: #CNN needs to just close down. Yesterday's fiasco with #MangoMoron was an outrageous fiasco. Who at that pathetic, dying network was responsible for vetting the so-called \"independent voters\" in the audience? Which cable news \"executive\" made the call to give the fat, lying criminal this much air-time?"},
+#     {"role": "assistant", "content": "The German Segment: #CNN muss einfach den Laden dichtmachen. Das Fiasko von gestern mit #MangoMoron war einfach ungeheuerlich. Wer war bei diesem jämmerlichen, im Sterben liegenden Sender eigentlich für die Überprüfung der sogenannten „unabhängigen Wähler“ im Publikum verantwortlich? Welcher Kabelnachrichten-„Verantwortliche“ hat denn die Entscheidung getroffen, dem fetten, lügenden Kriminellen so viel Sendezeit zu geben?"},
+# ]
+
+# messages = [
+#     {"role": "system", "content": "You are a pirate chatbot who always responds in pirate speak!"},
+#     {"role": "user", "content": "Who are you?"},
+# ]
+
+'''
+Translate the following text from English into German. The English Segment:
+Translate the following text from English into German. The English Segment:
+Translate the following text from English into German. The English Segment:
+
+Translate the following text from English into German. The English Segment:
+
+'''
 
 if prompt == "tower":
     template = TOWER
-elif prompt == "llama3":
-    template = LLAMA3
+elif prompt == "llama3-0-shot":
+    template = LLAMA3_ZERO_SHOT
+elif prompt == "llama3-3-shot":
+    template = LLAMA3_THREE_SHOT
+else:
+    raise ValueError(f"Unknown prompt: {prompt}")
 
 for line in sys.stdin:
     if SOURCE is not None:
