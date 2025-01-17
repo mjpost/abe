@@ -4,7 +4,7 @@ import sys
 cur_line_number = 1
 lines = []
 
-joining_string = " <eos> "
+joining_string = " "
 
 for line in sys.stdin:
     line = line.split('\t')
