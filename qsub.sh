@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 
-#$ -l h_rt=5:59:0,gpu=1
-#$ -q gpu_short.q,gpu.q@@rtx
+#$ -l h_rt=5:59:0,gpu=1,hostname=!(r5n11)
+#$ -q gpu.q@@rtx
 #$ -cwd
 #$ -o logs/
 #$ -j y
 #$ -cwd
 
 source ~/.bashrc
+
+nvidia-smi
+
+echo $CUDA_VISIBLE_DEVICES
 
 cd /exp/rwicks/ensemble24
 

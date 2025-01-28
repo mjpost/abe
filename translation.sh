@@ -46,4 +46,4 @@ paste $INPUT_ONE $INPUT_TWO \
     > $OUTPUT_FILE
 
 # Get the targets
-paste input_data/$TESTSET.$LANGUAGE_PAIR.line-numbers $OUTPUT_FILE | python combine-by-line-number.py > "$OUTPUT_DIR/targets/$CLEAN_MODEL_ONE_NAME-$CLEAN_MODEL_TWO_NAME"
+paste input_data/$TESTSET.$LANGUAGE_PAIR.line-numbers $OUTPUT_FILE | python combine-by-line-number.py > "$OUTPUT_DIR/targets/$CLEAN_MODEL_ONE_NAME+$CLEAN_MODEL_TWO_NAME"

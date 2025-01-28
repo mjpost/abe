@@ -513,7 +513,7 @@ def build_output(output, args):
 
 def print_output(outputs, args, ostream):
     for o in outputs:
-        print(build_output(o, args), file=ostream)
+        print(build_output(o, args).replace('\n', ' '), file=ostream)
 
 
 def ensemble_models(args):

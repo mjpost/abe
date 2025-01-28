@@ -18,8 +18,10 @@ def load_model(model_name, half=False):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
     return model, source_tokenizer, target_tokenizer
 
-def tokenize(tokenizer, bos_tokens=None, inputs=None, eos=True):
+def tokenize(tokenizer, start_token_id=None, bos_tokens=None, inputs=None, eos=True):
     out = []
+    if start_token_id is not None:
+        out.append(start_token_id)
     if bos_tokens is not None:
         out += tokenizer.convert_tokens_to_ids(bos_tokens)
         if tokenizer.bos_token_id not in out and tokenizer.unk_token_id in out:
@@ -33,11 +35,14 @@ def tokenize(tokenizer, bos_tokens=None, inputs=None, eos=True):
             tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(inputs))
         out += tokens
         logging.debug(f"Tokenized input: {tokens}")
+    if len(out) == 0:
+        out.append(tokenizer.bos_token_id)
     return out
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", "-m", type=str, default="facebook/nllb-200-distilled-600M")
+    parser.add_argument("--length", "-l", type=int, default=256)
     parser.add_argument("--half", default=False, action="store_true")
     parser.add_argument("--cpu", default=False, action="store_true")
     parser.add_argument("--input", "-i", default=None, type=str)
@@ -58,16 +63,17 @@ if __name__ == "__main__":
 
         
         if model.config.is_encoder_decoder:
-            encoder_inputs = tokenize(source_tokenizer, bos_tokens=item.get('encoder_bos_tokens', None), inputs=item.get('encoder_inputs', None), eos=True)
-        decoder_inputs = tokenize(target_tokenizer, bos_tokens=item.get('decoder_bos_tokens', None), inputs=item.get('decoder_inputs', None), eos=False)
+            encoder_inputs = tokenize(source_tokenizer, start_token_id=None, bos_tokens=item.get('encoder_bos_tokens', None), inputs=item.get('encoder_inputs', None), eos=True)
+        start_token_id = model.config.decoder_start_token_id if model.config.is_encoder_decoder else model.config.bos_token_id
+        decoder_inputs = tokenize(target_tokenizer, start_token_id=start_token_id, bos_tokens=item.get('decoder_bos_tokens', None), inputs=item.get('decoder_inputs', None), eos=False)
 
         if model.config.is_encoder_decoder:
             generated_tokens = model.generate(
                 input_ids=torch.tensor([encoder_inputs]).to(device),
-                attention_mask = torch.ones((1, len(decoder_inputs))).to(device),
+                # attention_mask = torch.ones((1, len(decoder_inputs))).to(device),
                 decoder_input_ids=torch.tensor([decoder_inputs]).to(device),
                 use_cache=True,
-                max_new_tokens = 256,
+                max_new_tokens = args.length,
                 pad_token_id=target_tokenizer.pad_token_id
             )
         else:
