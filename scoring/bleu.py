@@ -84,7 +84,7 @@ for tower in TOWER_LIST:
 import os
 import sacrebleu
 
-REFERENCE_PATH = "refs/wmt24.en-de.de"
+REFERENCE_PATH = "/exp/rwicks/ensemble24/refs/wmt24.en-de.de"
 REFERENCES = [open(REFERENCE_PATH).readlines()]
 
 def get_bleu_score(file_path):
@@ -93,9 +93,9 @@ def get_bleu_score(file_path):
     return bleu
 
 for exp in experiments:
-    model_one = exp[0].split('/')[-1]
-    model_two = exp[1].split('/')[-1]
-    path = os.path.join('translations/wmt24/en-de/targets/', f"{model_one}+{model_two}")
+    model_one = '-'.join(exp[0].split('/')[1:])
+    model_two = '-'.join(exp[1].split('/')[1:])
+    path = os.path.join('/exp/rwicks/ensemble24/translations/wmt24/en-de/targets/', f"{model_one}+{model_two}")
     # print(path)
     if not os.path.exists(path):
         print(f"{model_one}\t{model_two}\t-")
