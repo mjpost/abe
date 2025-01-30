@@ -1,5 +1,4 @@
-transformers==4.43.1
-torch
-sentencepiece
-pytest
-sacrebleu
+python==3.11
+torch==2.5.1
+transformers==4.48.1
+sentencepiece==0.2.0
