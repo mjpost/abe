@@ -207,10 +207,11 @@ class Model:
 
     def step(self):
         step_inputs = self.prepare_inputs_for_generation(self.output_ids, **vars(self.model_kwargs))
-        step_outputs = self.model(
-            **step_inputs,
-            return_dict=True,
-        )
+        with torch.no_grad():
+            step_outputs = self.model(
+                **step_inputs,
+                return_dict=True,
+            )
 
         if self.is_encoder_decoder:
             next_token_logits = step_outputs.logits[torch.arange(self.batch_beam_size), (self.build_attention_mask(step_inputs['decoder_input_ids']).sum(dim=1) - 1)]
