@@ -17,6 +17,7 @@ for line in sys.stdin:
     line = line.strip()
     inputs = tokenizer(line, return_tensors="pt").to(device)
     translated_tokens = model.generate(
-        **inputs, max_length=256
+        **inputs, max_length=256,
+        num_beams = 5,
     )
     print(tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0])

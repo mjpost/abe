@@ -28,5 +28,6 @@ for line in sys.stdin:
     outputs = pipe(
         messages,
         max_new_tokens=256,
+        num_beams = 5,
     )
     print(outputs[0]["generated_text"][-1]['content'].replace('\n', ' ').strip())
