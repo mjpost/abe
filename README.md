@@ -1,140 +1,44 @@
+# Repository Structure
+
+## Ensembling Code
+
+All code to do our method of ensembling can be found in the `ensembling` directory. The important files include `ensemble.py` which contains the main function; `models.py` which has the model wrappers for each model to maintain it's own hidden state; `search.py` which has our cube-pruning-esque search algorithm. `utils.py` has some functions to help with tokenization.
 
 
-## Test
+## Data
 
-    paste <(echo "This is a test." | ensembling/build/src-tgt "__en__" "__fr__") \
-            <(echo "This is a test." | ensembling/build/src-tgt "eng_Latn" "fra_Latn") \
-            | python ensembling/ensemble.py --models facebook/m2m100_418M facebook/nllb-200-distilled-600M -> C'est un test.
+### Inputs
 
-## Setup
-
-Installation:
-
-    python3 -m venv venv
-    . venv/bin/activate
-    
-We should fill this out with the requirements etc. We also need to add our unit tests here.
-
-## Rachel Changes
-
-- everything that wasn't used has been removed (extraneous model functions)
-- loading and calls are now model-agnostic (hopefully). Everything is loaded with the `AutoModelWithLMHead` function (apparently this model will soon/eventually be deprecated) and `AutoTokenizer`
-- batch size now works (I would continue to test with batch=1, sensitive to memory issues)
-- I moved a lot of the search code to its own file `search.py` to clear up `ensemble.py` which just handles the high level stuff
-- There's a new function `get_sorted_output_extensions` which handles the logic for what the model produces. Right now that's just either skipping (via pad/stall) or sorting. In the future, if there's more ways to optimize this, we can constrain the search.
-- I exit the search early when there is at least one beam to continue with and the search depth exceeds 10k--this significantly speeds up the model when it gets stuck sometimes
-- Source and Target tokenizers are different objects, but right now there is no logic to separate them for models where this is not the same
-- I removed gaussian noise---easy to add back in if we want to try that again
-
-### JSON inputs
-
-As part of the generalization, I have offloaded the preprocessing to be in the input. The input should be a tab-separated file/stream. The N-th column should be the input to the N-th model. There are 4 possible keys: 
-
-- `encoder_bos_tokens` (the source language code),
-- `encoder_inputs` (the source input),
-- `decoder_bos_tokens` (the target language code),
-- and `decoder_inputs` (the language model prompt)
-
-There is a script, `build/src-tgt`, that will build the appropriate inputs for a traditional multilingual MT-model style input. 
-
-Outputs now look like:
+For all our experiments, we use WMT24 data (en-XX, but mostly en-de).
+The raw inputs can be found in `refs`. These were made via commands such as:
 
 ```
-{
-    "sequence": "Maman a toujours dit que la vie est une boîte de chocolats", 
-    "scores": [-7.699125289916992, -8.633319854736328], 
-    "combined_score": -8.16622257232666, 
-    "token_scores": [
-        [-0.6921238303184509, -1.6668376922607422, -0.18656253814697266, -0.09190487861633301, -0.12645173072814941, -0.13176846504211426, -0.17235255241394043, -1.3625507354736328, -0.5222439765930176, -0.3566570281982422, -0.10730648040771484, -0.3345036506652832, -0.03524971008300781, -0.8017196655273438, -0.07809257507324219, -1.0327997207641602], 
-        [-2.7465639114379883, -0.12948155403137207, -0.9309823513031006, -0.23229646682739258, -0.18974018096923828, -0.21661853790283203, -0.3390951156616211, -0.18550491333007812, -0.31716394424438477, -0.47531604766845703, -0.8708596229553223, -0.17315959930419922, -0.03824901580810547, -0.1769704818725586, -0.054709434509277344, -0.6767921447753906, -0.8798165321350098]
-    ], 
-    "tokens": [
-        ["</s>", "fra_Latn", "▁Maman", "▁a", "▁toujours", "▁dit", "▁que", "▁la", "▁vie", "▁est", "▁une", "▁bo", "îte", "▁de", "▁cho", "cola", "ts", "</s>"],
-        ["</s>", "__fr__", "▁M", "aman", "▁a", "▁toujours", "▁dit", "▁que", "▁la", "▁vie", "▁est", "▁une", "▁bo", "î", "te", "▁de", "▁chocol", "ats", "</s>"]
-    ],
-    "token_ids": [
-        [2, 256057, 184065, 9, 37413, 1329, 340, 82, 6651, 613, 3335, 403, 145334, 79, 1925, 15440, 468, 2],
-        [2, 128028, 100, 1905, 8, 19884, 793, 27, 14, 7315, 769, 1269, 502, 9469, 123, 6, 110309, 817, 2]
-    ]
-}
-
+sacrebleu -t wmt24 -l en-de --echo src > wmt24.en-de.en
+sacrebleu -t wmt24 -l en-de --echo ref > wmt24.en-de.de
 ```
 
-## TODO
-- [ ] Ensemble the same model twice (passed in as two models)
-- [ ] Ensemble two models with a shared vocabulary
-- [ ] Ensemble two models with different vocabularies
-- [ ] Add script to convert Marian models to Huggingface
-- [ ] Create a Marian model class for HF (maybe already exists?)
-- [ ] Add a decoder-only language model such as `Unbabel/TowerInstruct-Mistral-7B-v0.2`
+#### Creation
 
-### Unit Tests
-- [ ] given some file, for each line in file, get output, run it through individual models to get the token level scores, compare (there are some helpful functions in `utils.py` for tokenization)
-- [ ] given some file, for each line in file, run it through individual models. if the translations are the same, ensure the ensemble translation is *also* the same.
-
-## Design CLI
-
-echo This is a test | gensemble -m facebook/m2m facebook/nllb meta/llama /path/to/model/bundle --target-lang fr
-
-
-## Files
-
-- Definition of generate(): /Users/mattpost/src/transformers/src/transformers/generation/utils.py
-
-  This is a version that's generate over beam search, sampling, constrained search, etc.
-  Actually calls beam_search() in the same file.
-        
-
-## Notes
-
-Huggingface beam search pops items off the beam when they are finished, and continues generating using normal beam search, until there are enough complete items. Another strategy would be to keep those items in the beam and ignore them.
-
-## Unit Testing
-
-We wrote a script to collect scores from M2M100. It runs like this:
+These inputs are unsegmented (multiple sentences per line) which can make some machine translation models add or remove content. To circumvent these issues, we first segment these files into sentences. We then translate, and then reconcatenate. This requires an intermediate file (the sentences with the associated line numbers). We create this using `ersatz`:
 
 ```
-sacrebleu -t wmt14 -l en-fr --echo src ref | python unit-tests.py
+cat wmt24.en-de.en | awk '{print NR "\t" $0}' | ersatz -m en -C 1 > wmt24.en-de.en.sentences
 ```
 
-We'll use this to determine logprobs for unit tests.
+Our ensembling code requires `jsonl` inputs. We provide several scripts to automatically create these from plain text inputs. All scripts are in `ensembling/build/`
 
-## Code Review:
+1. `bilingual-no-tags` creates inputs for a traditional encoder-decoder model which takes the input line as encoder input and has no additional special tags. We use these for our Marian `en-de` models.
+2. `empty` creates an empty input. This would be used for a traditional decoder-only model that does not take prompts.
+3. `prompt` creates input for both LLAMA and Tower specifically for translation. This is highly constrained to the set of languages we cover but we provide both 0-shot and 3-shot options. Calling looks like `echo "This is a test." | python ensembling/build/prompt llama3-0-shot English German`
+4. `src-tgt` creates input for both M2M and NLLB by taking the source language token and the target language token. Calling looks like `echo "This is a test." | python ensembling/build/src-tgt eng_Latn deu_Latn`
 
 
-## Jan 10 Minimal Reproducible Examples
+The processed inputs (`jsonl`) can be found in `input_data`. They are labelled by model, and language pair.
 
-<<<<<<< HEAD
-1. EN-DE X EN-DE (RACHEL)
-    a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/bilingual-no-tags) > en-de-input`
-    b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/bilingual-no-tags) > en-de-x-en-de-test`
-    c. TO RUN: `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 rewicks/baseline_en-de_8k_ep25 -i en-de-x-en-de-test --debug beam`
-2. EN-DE X M2M (KARTIK/XINCHEN) FLORES
-    a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/src-tgt __en__ __de__) > en-de-input`
-    b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/src-tgt en de) > en-de-x-m2m-test`
-    c. `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 facebook/m2m100_418M -i en-de-x-en-de-test --debug beam`
-3. EN-DE X NLLB (KARTIK/XINCHEN) FLORES
-    a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/src-tgt eng_Latn deu_Latn) > en-de-input`
-    b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/src-tgt eng_Latn deu_Latn) > en-de-x-nllb-test`
-    c. `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 facebook/nllb-200-distilled-600M -i en-de-x-nllb-test --debug beam`
-4. M2M X NLLB (KARTIK/XINCHEN) FLORES
-    a.`paste <(cat inputs/src | python ensembling/build/src-tgt __en__ __de__) <(cat inputs/src | python ensembling/build/src-tgt eng_Latn deu_Latn) > en-de-input`
-    b. OR `paste <(echo "This is a test." | python ensembling/build/src-tgt __en__ __de__) <(echo "This is a test." | python ensembling/build/src-tgt eng_Latn deu_Latn) > m2m-x-nllb-test`
-    c. `python ensembling/ensemble.py -m facebook/m2m100_418M facebook/nllb-200-distilled-600M -i m2m-x-nllb-test --debug beam`
-5. EN-DE X TOWER
-    a. `paste <(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/prompt tower English French) > en-de-input`
-    b. OR `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test" | python ensembling/build/prompt tower English German) > en-de-x-tower-test`
-    c. `python ensembling/ensemble.py -m rewicks/baseline_en-de_8k_ep25 Unbabel/TowerInstruct-7B-v0.1 -i en-de-x-tower-test --debug --half beam`
-6. EN-DE X LLAMA3
-    a. `paste <(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/prompt llama3 English German) > en-de-x-llama3-test`
-7. TOWER X LLAMA3
-    a. `paste <(echo "This is a test." | python ensembling/build/prompt tower English German) <(echo "This is a test." | python ensembling/build/prompt llama3 English German) > tests/tower-x-llama3-test`
-    b. `python ensembling/ensemble.py -m Unbabel/TowerInstruct-7B-v0.1 meta-llama/Meta-Llama-3-8B-Instruct -i tests/tower-x-llama3-test --half beam`
 
-=======
-1. EN-DE X EN-DE
-    a. paste `<(cat inputs/src | python ensembling/build/bilingual-no-tags) <(cat inputs/src | python ensembling/build/bilingual-no-tags) > en-de-input`
-    b. OR paste `<(echo "This is a test." | python ensembling/build/bilingual-no-tags) <(echo "This is a test." | python ensembling/build/bilingual-no-tags) > en-de-x-en-de-test`
-    c. TO RUN: `python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 rewicks/baseline_en-de_8k_ep25 -i en-de-x-en-de-test --debug bea`
->>>>>>> 56238ac2f60e4eadb2b7e8e47ff970864f553945
+# Outputs
 
+
+
+
+# Scoring is

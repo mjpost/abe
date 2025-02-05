@@ -189,5 +189,5 @@ for line in sys.stdin:
         template = template.replace("```TARGET```", TARGET)
     prompt_input = template.replace("```INPUT_TEXT```", line.strip())
     print(json.dumps({
-        "decoder_inputs": prompt_input
-    }))
+        "decoder_inputs": prompt_input,
+    }, ensure_ascii=False))
