@@ -6,6 +6,7 @@ import sys
 
 
 model_id = sys.argv[1]
+lang_id = sys.argv[2]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -18,7 +19,7 @@ for line in sys.stdin:
     line = line.strip()
     inputs = tokenizer(line, return_tensors="pt").to(device)
     translated_tokens = model.generate(
-        **inputs, forced_bos_token_id=tokenizer.convert_tokens_to_ids("__de__"), max_length=256,
+        **inputs, forced_bos_token_id=tokenizer.get_lang_id(lang_id), max_length=256,
         num_beams = 5,
     )
     print(tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0])

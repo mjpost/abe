@@ -15,7 +15,7 @@ import random
 import math
 
 from transformers import MarianMTModel, AutoTokenizer
-
+torch.manual_seed
 
 class Mixture():
     def __init__(self, ensembled_models, input_ids, encoder_attention_mask, lambdas=[1.0], num_beams=5):
@@ -34,12 +34,13 @@ class Mixture():
 
         # then we need to get the encoder_outputs for each model
         for i, model in enumerate(ensembled_models):
-            encoder_outputs = model.get_encoder()(
-                input_ids,
-                attention_mask = encoder_attention_mask,
-                return_dict = True,
-                output_attentions = True,
-                output_hidden_states = True)
+            with torch.no_grad():
+                encoder_outputs = model.get_encoder()(
+                    input_ids,
+                    attention_mask = encoder_attention_mask,
+                    return_dict = True,
+                    output_attentions = True,
+                    output_hidden_states = True)
             self.encoder_outputs.append(encoder_outputs)
         self.encoder_attention_mask = encoder_attention_mask
         self.input_ids = input_ids
@@ -47,29 +48,52 @@ class Mixture():
 
     def __call__(self, input_ids, logits):
 
-        log_logits_list = []
-        # logits_list = []
-        # avg_probs = torch.logsumexp(torch.stack(log_probs, dim=0), dim=0) - math.log(self.n_models)
+        # logits <-- log probabilities of model one
+        # input_ids <-- can use to get unprocessed outputs of model two (i.e., line 66-68)
+        # \lambda*(p_1(x)) + (1-\lambda)*(p_2(x))) <-- p is in probability space ?
+        # \lambda*(p_1(x)) + (1-\lambda)*(p_2(x))) <-- p is in log space ?
 
-        # we get the raw, unprocessed logits from the lead model
+        log_logits_list = []
+
         # we will get a probability distribution and then multiply by the lambda (weight)
-        log_logits_list.append(F.log_softmax(logits, dim=-1) + math.log(self.lambdas[0]))
-        # logits_list.append(F.softmax(logits, dim=-1) * self.lambdas[0])
+        log_logits_list.append(logits + math.log(self.lambdas[0]))
 
         # for each model, we get the logits and apply the softmax then multiply by the associated lambda (weight)
-        for i, model in enumerate(self.ensembled_models):
+        for i, model in enumerate(self.ensembled_models[1:], 1):
             translation_model_logits = model.forward(
                 decoder_input_ids = input_ids,
                 encoder_outputs = self.encoder_outputs[i]).logits[:, -1, :]
-            # logits_list.append(F.softmax(translation_model_logits, dim=-1) * self.lambdas[i+1])
-            log_logits_list.append(F.log_softmax(translation_model_logits, dim=-1) + math.log(self.lambdas[i+1]))
+            log_logits_list.append(F.log_softmax(translation_model_logits, dim=-1) + math.log(self.lambdas[i]))
         
         avg_probs = torch.logsumexp(torch.stack(log_logits_list, dim=0), dim=0)
-        # softmax_logits = torch.sum(torch.stack(logits_list, dim=0), dim=0)
-
 
         # the resulting logits should be an interpolated probability distribution, we return the log probabilities
         return avg_probs
+        
+    # def __call__(self, input_ids, logits):
+
+    #     # logits <-- log probabilities of model one
+    #     # input_ids <-- can use to get unprocessed outputs of model two (i.e., line 66-68)
+
+    #     # breakpoint()
+    #     logits_list = []
+
+    #     # we get the raw, unprocessed logits from the lead model
+    #     logits_list.append(logits * self.lambdas[0])
+
+    #     # for each model, we get the logits and apply the softmax then multiply by the associated lambda (weight)
+    #     for i, model in enumerate(self.ensembled_models[1:], 1):
+    #         with torch.no_grad():
+    #             translation_model_logits = model.forward(
+    #                 decoder_input_ids = input_ids,
+    #                 encoder_outputs = self.encoder_outputs[i]).logits[:, -1, :]
+    #         logits_list.append(F.log_softmax(translation_model_logits, dim=-1) * self.lambdas[i])
+        
+    #     logits = F.log_softmax(torch.sum(torch.stack(logits_list, dim=0), dim=0), dim=-1)
+    #     # the resulting logits should be an interpolated probability distribution, we return the log probabilities
+    #     return logits
+    
+
 
 
 def yield_doc(istream):
@@ -140,8 +164,10 @@ if __name__ == "__main__":
         # the lead model is the one we will call generate on.
         # all other models will be passed to the "Mixture" which will ensemble the logits during each step
         lead_model = models[0]
-        outputs = lead_model.generate(input_ids, 
-                                    logits_processor=[Mixture(models[1:], input_ids, attention_mask, lambdas=lambdas)])
+        with torch.no_grad():
+            outputs = lead_model.generate(input_ids, 
+                                        logits_processor=[Mixture(models, input_ids, attention_mask, lambdas=lambdas)],
+                                        num_beams=5)
         # for each sentence in the batch, we append the generated sentence to the translation context
         for i, output in enumerate(outputs):
             print(tokenizer.decode(output, skip_special_tokens=True))

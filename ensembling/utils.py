@@ -218,13 +218,6 @@ TOKENIZER_CONFIG = {
         "byte_map": BYTE_MAP,
         "add_space": True
     },
-    "rewicks/baseline_en-de_64k_ep25": {
-        "lstrip": False,
-        "special_character": SPIECE_UNDERLINE,
-        "begin_word": True,
-        "byte_map": BYTE_MAP,
-        "add_space": True
-    },
     "meta-llama/Meta-Llama-3-8B-Instruct": {
         "lstrip": False,
         "special_character": GPIECE,
