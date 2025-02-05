@@ -3,11 +3,36 @@
 * [ ] qualify the difference in outputs between interpolation-ensembling and agreement-based-ensembling. Randomly selectin two model checkpoints and reviewing the differences
     * [ ] comet-score individual sentences, and sort on delta <-- qualify the differences
 
-* [ ] try another language pair (European languages; Czech, Spanish, Russian, Ukrainian) (nllb x m2m; skip LLAMA 1B, 600M, skip smallest versions) LLama 8B 0-shot 3-shot
-        * NLLB large x M2M large
-        * NLLB large x Tower 7B - Instructv0.2 (skip Mistral)
-        * NLLB large x LLama 8B
-        * Tower 7B x LLama8B
+* [ ] try another language pair (European languages; Czech, Spanish, Russian, Ukrainian) (nllb x m2m; skip LLAMA 1B, 600M, skip smallest versions) LLama 8B 3-shot
+    * NLLB large x M2M large
+    * NLLB large x Tower 7B - Instructv0.2 (skip Mistral)
+    * NLLB large x LLama 8B
+    * Tower 7B x LLama8B
+
+For simplicity, it should essentially be these commands
+ ```
+ bash translation.sh facebook/m2m100_1.2B facebook/nllb-200-3.3B en-cs wmt24
+ bash translation.sh facebook/nllb-200-3.3B Unbabel/TowerInstruct-7B-v0.2 en-cs wmt24
+ bash translation.sh facebook/nllb-200-3.3B meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-cs wmt24
+ bash translation.sh Unbabel/TowerInstruct-7B-v0.2 meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-cs wmt24
+
+ bash translation.sh facebook/m2m100_1.2B facebook/nllb-200-3.3B en-es wmt24
+ bash translation.sh facebook/nllb-200-3.3B Unbabel/TowerInstruct-7B-v0.2 en-es wmt24
+ bash translation.sh facebook/nllb-200-3.3B meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-es wmt24
+ bash translation.sh Unbabel/TowerInstruct-7B-v0.2 meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-es wmt24
+
+ bash translation.sh facebook/m2m100_1.2B facebook/nllb-200-3.3B en-ru wmt24
+ bash translation.sh facebook/nllb-200-3.3B Unbabel/TowerInstruct-7B-v0.2 en-ru wmt24
+ bash translation.sh facebook/nllb-200-3.3B meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-ru wmt24
+ bash translation.sh Unbabel/TowerInstruct-7B-v0.2 meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-ru wmt24
+
+ bash translation.sh facebook/m2m100_1.2B facebook/nllb-200-3.3B en-uk wmt24
+ bash translation.sh facebook/nllb-200-3.3B Unbabel/TowerInstruct-7B-v0.2 en-uk wmt24
+ bash translation.sh facebook/nllb-200-3.3B meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-uk wmt24
+ bash translation.sh Unbabel/TowerInstruct-7B-v0.2 meta-llama/Llama-3.1-8B-Instruct/3-SHOT en-uk wmt24
+```
+
+
 
 * [ ] Double check the scoring scripts
     * find a random line in `bleu-scores`, score the accompanying file with `sacrebleu` cli. Is it the same?

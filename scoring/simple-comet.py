@@ -1,3 +1,20 @@
+import os
+from subprocess import check_output
+
+
+MARIAN_CLI = "- -m wmt22-comet-da -a only -d 0"
+
+SOURCE_PATH="../refs/wmt24.en-de.en"
+SOURCES = [open(SOURCE_PATH).readlines()]
+
+REFERENCE_PATH="../refs/wmt24.en-de.de"
+REFERENCES = [open(REFERENCE_PATH).readlines()]
+
+
+def get_comet_score(file_path):
+    out = check_output(f"paste {SOURCE_PATH} {file_path} {REFERENCE_PATH} | pymarian-eval {MARIAN_CLI}", shell=True).decode('utf-8').strip()
+    return float(out)*100
+
 
 TOWER_LIST = ["TowerInstruct-7B-v0.2", "TowerInstruct-Mistral-7B-v0.2"]
 LLAMA_LIST = ["Llama-3.2-1B-Instruct/3-SHOT", "Llama-3.2-1B-Instruct/0-SHOT", \
@@ -16,18 +33,6 @@ for v in [8, 16, 32, 64]:
     for e in [25]:
         MAJOR_CUSTOM.append(f"baseline_en-de_{v}k_ep{e}")
 
-
-import os
-import sacrebleu
-
-REFERENCE_PATH = "../refs/wmt24.en-de.de"
-REFERENCES = [open(REFERENCE_PATH).readlines()]
-
-def get_bleu_score(file_path):
-    hypotheses = open(file_path).readlines()
-    bleu = sacrebleu.corpus_bleu(hypotheses, REFERENCES).score
-    return bleu
-
 MODELS = CUSTOM + MAJOR_CUSTOM + TOWER_LIST + LLAMA_LIST + NLLB_LIST + M2M_LIST
 
 for model in MODELS:
@@ -36,5 +41,5 @@ for model in MODELS:
     if not os.path.exists(path):
         print(f"{model}\t-")
     if os.path.exists(path):
-        bleu_score = get_bleu_score(path)
+        bleu_score = get_comet_score(path)
         print(f"{model}\t{bleu_score:.1f}")
