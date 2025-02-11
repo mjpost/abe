@@ -4,6 +4,7 @@ import sys, json
 import torch
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from collections import defaultdict
 
 model_one_id = sys.argv[1]
 model_two_id = sys.argv[2]
@@ -41,19 +42,36 @@ def get_model_score(model, tokenizer, inputs, output_one, output_two, ensemble_o
     }
     return output
 
+def determine_preference(likelihood):
 
-scores = {
-    "model_one": {
-        "model_one": 0,
-        "model_two": 0,
-        "ensemble": 0
-    },
-    "model_two": {
-        "model_one": 0,
-        "model_two": 0,
-        "ensemble": 0
-    }
-}
+    sorted_preferences = sorted(likelihood.items(), key=lambda x: x[1], reverse=True)
+    if sorted_preferences[0][1] == sorted_preferences[1][1]:
+        if sorted_preferences[0][1] == sorted_preferences[2][1]:
+            return ['model_one', 'model_two', 'ensemble']
+        return [sorted_preferences[0][0], sorted_preferences[1][0]]
+    return [sorted_preferences[0][0]]
+
+
+
+scores = defaultdict(lambda: defaultdict(int))
+
+# scores = {
+#     "model_one": {
+#         "model_one": 0,
+#         "model_two": 0,
+#         "ensemble": 0
+#     },
+#     "model_two": {
+#         "model_one": 0,
+#         "model_two": 0,
+#         "ensemble": 0
+#     },
+#     "ensemble": {
+#         "model_one": 0,
+#         "model_two": 0,
+#         "ensemble": 0,
+#     }
+# }
 for line in sys.stdin:
     line = line.strip().split('\t')
     assert len(line) == 4
@@ -62,34 +80,23 @@ for line in sys.stdin:
     model_two_output = line[2]
     ensemble_output = line[3]
 
-    # print('Model inputs')
-    # print(model_inputs)
-    # print('Model one output')
-    # print(model_one_output)
-    # print('Model two output')
-    # print(model_two_output)
-    # print('Ensemble output')
-    # print(ensemble_output)
 
+    # get scores (which determine preferences)
     model_one_likelihood = get_model_score(model_one, tokenizer_one, model_inputs, model_one_output, model_two_output, ensemble_output)
-    # print('Model one preferences')
-    # print(json.dumps(model_one_likelihood, indent=2))
-    if model_one_likelihood['model_one'] > model_one_likelihood['model_two'] and model_one_likelihood['model_one'] > model_one_likelihood['ensemble']:
-        scores['model_one']['model_one'] += 1
-    elif model_one_likelihood['model_two'] > model_one_likelihood['model_one'] and model_one_likelihood['model_two'] > model_one_likelihood['ensemble']:
-        scores['model_one']['model_two'] += 1
-    else:
-        scores['model_one']['ensemble'] += 1
-
     model_two_likelihood = get_model_score(model_two, tokenizer_two, model_inputs, model_one_output, model_two_output, ensemble_output)
-    # print('Model two preferences')
-    # print(json.dumps(model_two_likelihood, indent=2))
-    if model_two_likelihood['model_one'] > model_two_likelihood['model_two'] and model_two_likelihood['model_one'] > model_two_likelihood['ensemble']:
-        scores['model_two']['model_one'] += 1
-    elif model_two_likelihood['model_two'] > model_two_likelihood['model_one'] and model_two_likelihood['model_two'] > model_two_likelihood['ensemble']:
-        scores['model_two']['model_two'] += 1
-    else:
-        scores['model_two']['ensemble'] += 1
+    ensemble_likelihood = {
+        'model_one': (model_one_likelihood['model_one'] + model_two_likelihood['model_one']) / 2,
+        'model_two': (model_one_likelihood['model_two'] + model_two_likelihood['model_two']) / 2,
+        'ensemble': (model_one_likelihood['ensemble'] + model_two_likelihood['ensemble']) / 2
+    
+    }
+
+    for preference in determine_preference(model_one_likelihood):
+        scores['model_one'][preference] += 1
+    for preference in determine_preference(model_two_likelihood):
+        scores['model_two'][preference] += 1
+    for preference in determine_preference(ensemble_likelihood):
+        scores['ensemble'][preference] += 1
 
 print(json.dumps(scores, indent=2))
     
