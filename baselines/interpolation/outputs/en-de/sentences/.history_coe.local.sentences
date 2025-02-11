@@ -1,0 +1,94 @@
+2025 Jan 30 Thu 06:50:43 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1001  cd code/ensemble24/interpolation/outputs/sentences/
+2025 Jan 30 Thu 06:50:43 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1002  ls
+2025 Jan 30 Thu 06:50:45 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1003  wc -l baseline_en-de_8k_ep1+baseline_en-de_8k_ep2 
+2025 Jan 30 Thu 06:51:42 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1004  watch wc -l baseline_en-de_8k_ep1+baseline_en-de_8k_ep2 
+2025 Jan 30 Thu 06:51:45 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1005  tail baseline_en-de_8k_ep1+baseline_en-de_8k_ep2 
+2025 Jan 30 Thu 06:55:03 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1006  watch wc -l baseline_en-de_8k_ep1+baseline_en-de_8k_ep2 
+2025 Jan 30 Thu 07:55:16 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1007  watch "wc -l *"
+2025 Jan 30 Thu 09:30:51 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1025  cd ../interpolation/outputs/sentences/
+2025 Jan 30 Thu 09:30:51 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1026  ls
+2025 Jan 30 Thu 09:30:57 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1027  wc -l *
+2025 Jan 30 Thu 09:32:32 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1027  wc -l *
+2025 Jan 30 Thu 09:33:55 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1028  tmux a
+2025 Jan 30 Thu 09:37:04 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1028  tmux a
+2025 Jan 30 Thu 09:37:06 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1029  wc -l *
+2025 Jan 30 Thu 09:39:41 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1030  tmux a
+2025 Jan 30 Thu 09:39:46 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1031  wc -l *
+2025 Jan 30 Thu 09:40:34 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1032  rm baseline_en-de_8k_ep10+
+2025 Jan 30 Thu 09:40:37 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1033  rm baseline_en-de_8k_ep15+
+2025 Jan 30 Thu 09:40:41 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1034  rm baseline_en-de_8k_ep20+
+2025 Jan 30 Thu 09:40:43 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1035  rm baseline_en-de_8k_ep25+
+2025 Jan 30 Thu 09:40:57 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1036  rm baseline_en-de_8k_ep3+
+2025 Jan 30 Thu 09:41:00 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1037  rm baseline_en-de_8k_ep4+
+2025 Jan 30 Thu 09:41:03 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1038  rm baseline_en-de_8k_ep5+
+2025 Jan 30 Thu 09:41:07 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1039  wc -l *
+2025 Jan 30 Thu 09:41:12 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1040  rm baseline_en-de_16k_ep10+
+2025 Jan 30 Thu 09:41:16 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1041  rm baseline_en-de_16k_ep15+
+2025 Jan 30 Thu 09:41:20 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1042  rm baseline_en-de_16k_ep25+
+2025 Jan 30 Thu 09:41:24 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1043  rm baseline_en-de_16k_ep20+
+2025 Jan 30 Thu 09:41:31 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1044  rm baseline_en-de_16k_ep3+
+2025 Jan 30 Thu 09:41:36 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1045  rm baseline_en-de_16k_ep4+
+2025 Jan 30 Thu 09:41:40 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1046  rm baseline_en-de_16k_ep5+
+2025 Jan 30 Thu 09:41:45 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1047  wc -l *
+2025 Jan 30 Thu 09:42:06 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1048  rm baseline_en-de_16k_ep10+baseline_en-de_16k_ep2
+2025 Jan 30 Thu 09:42:11 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1049  rm baseline_en-de_16k_ep15+baseline_en-de_16k_ep2
+2025 Jan 30 Thu 09:42:20 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1050  rm baseline_en-de_16k_ep20+baseline_en-de_16k_ep2
+2025 Jan 30 Thu 09:42:29 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1051  rm baseline_en-de_16k_ep25+baseline_en-de_16k_ep2
+2025 Jan 30 Thu 09:42:34 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1052  wc -l *
+2025 Jan 30 Thu 09:42:45 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1053  rm baseline_en-de_16k_ep4+baseline_en-de_16k_ep2
+2025 Jan 30 Thu 09:42:49 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1054  rm baseline_en-de_16k_ep5+baseline_en-de_16k_ep2
+2025 Jan 30 Thu 09:43:02 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1055  wc -l * | grep "ep2"
+2025 Jan 30 Thu 09:43:04 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1056  wc -l * | grep "ep2$"
+2025 Jan 30 Thu 09:43:16 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1057  rm baseline_en-de_16k_ep3+baseline_en-de_16k_ep2
+2025 Jan 30 Thu 09:43:27 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1058  rm baseline_en-de_32k_ep10+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 09:43:41 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1059  rm baseline_en-de_32k_ep15+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 09:43:49 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1060  rm baseline_en-de_32k_ep20+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 09:43:53 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1061  rm baseline_en-de_32k_ep25+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 09:43:56 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1062  rm baseline_en-de_32k_ep3+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 09:44:01 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1063  rm baseline_en-de_32k_ep4+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 09:44:04 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1064  rm baseline_en-de_32k_ep5+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 09:44:07 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1065  rm baseline_en-de_64k_ep10+baseline_en-de_64k_ep2
+2025 Jan 30 Thu 09:44:11 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1066  rm baseline_en-de_64k_ep15+baseline_en-de_64k_ep2
+2025 Jan 30 Thu 09:44:14 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1067  rm baseline_en-de_64k_ep20+baseline_en-de_64k_ep2
+2025 Jan 30 Thu 09:44:19 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1068  wc -l * | grep "ep2$"
+2025 Jan 30 Thu 09:44:24 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1069  rm baseline_en-de_64k_ep25+baseline_en-de_64k_ep2
+2025 Jan 30 Thu 09:44:28 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1070  rm baseline_en-de_64k_ep3+baseline_en-de_64k_ep2
+2025 Jan 30 Thu 09:44:33 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1071  rm baseline_en-de_64k_ep4+baseline_en-de_64k_ep2
+2025 Jan 30 Thu 09:44:39 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1072  rm baseline_en-de_64k_ep5+baseline_en-de_64k_ep2
+2025 Jan 30 Thu 09:44:44 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1073  rm baseline_en-de_8k_ep10+baseline_en-de_8k_ep2
+2025 Jan 30 Thu 09:44:48 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1074  rm baseline_en-de_8k_ep15+baseline_en-de_8k_ep2
+2025 Jan 30 Thu 09:44:52 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1075  rm baseline_en-de_8k_ep20+baseline_en-de_8k_ep2
+2025 Jan 30 Thu 09:44:55 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1076  rm baseline_en-de_8k_ep3+baseline_en-de_8k_ep2
+2025 Jan 30 Thu 09:45:00 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1077  rm baseline_en-de_8k_ep4+baseline_en-de_8k_ep2
+2025 Jan 30 Thu 09:45:03 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1078  rm baseline_en-de_8k_ep5+baseline_en-de_8k_ep2
+2025 Jan 30 Thu 09:45:08 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1079  wc -l * | grep "ep2$"
+2025 Jan 30 Thu 09:45:26 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1080  tmux a
+2025 Jan 30 Thu 09:45:49 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1081  wc -l ~/code/ensemble24/simple-translations/outputs/sentences/*
+2025 Jan 30 Thu 09:46:01 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1082  rm /home/hltcoe/rwicks/code/ensemble24/simple-translations/outputs/sentences/baseline_en-de_16k_ep10+
+2025 Jan 30 Thu 09:46:07 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1082  rm /home/hltcoe/rwicks/code/ensemble24/simple-translations/outputs/sentences/baseline_en-de_16k_ep10+
+2025 Jan 30 Thu 12:20:25 EST r7n04 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1031  cd sentences/
+2025 Jan 30 Thu 12:20:26 EST r7n04 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1032  ls
+2025 Jan 30 Thu 12:20:32 EST r7n04 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1033  wc -l *32k*
+2025 Jan 30 Thu 12:20:41 EST r7n04 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1034  rm baseline_en-de_32k_ep20+baseline_en-de_32k_ep{25}
+2025 Jan 30 Thu 12:21:33 EST r7n04 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1035  v="32"; MODEL_TWO="rewicks/baseline_en-de_"$v"k_ep2"; for ep in {3,4,5,10,15,20,25}; do     MODEL_ONE="rewicks/baseline_en-de_"$v"k_ep"$ep;     CLEAN_MODEL_ONE_NAME=$(echo $MODEL_ONE | cut -d'/' -f2);     CLEAN_MODEL_TWO_NAME=$(echo $MODEL_TWO | cut -d'/' -f2);     OUTPUT="outputs/sentences/$CLEAN_MODEL_ONE_NAME+$CLEAN_MODEL_TWO_NAME";     cat ../wmt24.en-de.en.sentences | cut -f2 | python -u interpolate-translate.py -m $MODEL_ONE -m $MODEL_TWO > $OUTPUT; done
+2025 Jan 30 Thu 12:43:21 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1128  cd sentences/
+2025 Jan 30 Thu 12:43:52 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1129  cat ~/code/ensemble24/simple-translations/outputs/sentences/.history_coe.local.sentences 
+2025 Jan 30 Thu 12:44:03 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1130  mkdir ../targets
+2025 Jan 30 Thu 12:44:18 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1131  for f in *; do echo $f; paste ~/code/ensemble24/input_data/wmt24.en-de.line-numbers $f | python ~/code/ensemble24/combine-by-line-number.py > ../targets/$f; done;
+2025 Jan 30 Thu 12:44:24 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1132  wc -l *
+2025 Jan 30 Thu 12:44:41 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1133  rm ../targets/baseline_en-de_32k_ep10+baseline_en-de_32k_ep2
+2025 Jan 30 Thu 12:44:45 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1134  wc -l * | grep -v "2408"
+2025 Jan 30 Thu 12:44:56 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1135  rm ../targets/TowerInstruct-7B-v0.2
+2025 Feb 03 Mon 21:22:44 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1005  cd outputs/sentences/
+2025 Feb 03 Mon 21:22:45 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1006  ls
+2025 Feb 03 Mon 21:22:59 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1007  wc -l *
+2025 Feb 03 Mon 21:23:03 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1008  conda activate ensemble311
+2025 Feb 03 Mon 21:23:04 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1009  cat .history_coe.local.sentences 
+2025 Feb 03 Mon 21:23:12 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1010  cat .history_coe.local.sentences | grep "for"
+2025 Feb 03 Mon 21:23:23 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1011  for f in *; do echo $f; paste ~/code/ensemble24/input_data/wmt24.en-de.line-numbers $f | python ~/code/ensemble24/combine-by-line-number.py > ../targets/$f; done;
+2025 Feb 03 Mon 21:33:17 EST test1 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1012  tmux a
+2025 Feb 04 Tue 20:04:06 EST r7n08 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1008  cd outputs/sentences/
+2025 Feb 04 Tue 20:04:08 EST r7n08 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1009  ls
+2025 Feb 04 Tue 20:04:09 EST r7n08 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1010  cat .history_coe.local.sentences 
+2025 Feb 04 Tue 20:04:21 EST r7n08 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1011  for f in *; do echo $f; paste ~/code/ensemble24/input_data/wmt24.en-de.line-numbers $f | python ~/code/ensemble24/combine-by-line-number.py > ../targets/$f; done;
+2025 Feb 04 Tue 20:10:58 EST r7n08 /home/hltcoe/rwicks/code/ensemble24/interpolation/outputs/sentences  1012  git add *
