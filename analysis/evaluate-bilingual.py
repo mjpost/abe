@@ -20,8 +20,8 @@ model_two = AutoModelForSeq2SeqLM.from_pretrained(model_two_id).to(device)
 def get_model_score(model, tokenizer, inputs, output_one, output_two, ensemble_output):
 
     def get_score(inputs, outputs):
-        input_ids = tokenizer.encode(inputs, return_tensors="pt").to(device)
-        output_ids = tokenizer.encode(outputs, return_tensors="pt").to(device)
+        input_ids = tokenizer.encode(inputs, return_tensors="pt", max_length=255, truncation=True).to(device)
+        output_ids = tokenizer.encode(outputs, return_tensors="pt", max_length=255, truncation=True).to(device)
         all_logits = []
         for i in range(output_ids.shape[-1]-1):
             outputs = model(
@@ -73,8 +73,11 @@ scores = defaultdict(lambda: defaultdict(int))
 #     }
 # }
 for line in sys.stdin:
-    line = line.strip().split('\t')
-    assert len(line) == 4
+    print
+    line = line.split('\t')
+    assert len(line) == 4, f'{line}'
+    if len(line[0]) == 0 or len(line[1]) == 0 or len(line[2]) == 0 or len(line[3]) == 0:
+        continue
     model_inputs = line[0]
     model_one_output = line[1]
     model_two_output = line[2]
@@ -82,8 +85,12 @@ for line in sys.stdin:
 
 
     # get scores (which determine preferences)
+    # try:
     model_one_likelihood = get_model_score(model_one, tokenizer_one, model_inputs, model_one_output, model_two_output, ensemble_output)
     model_two_likelihood = get_model_score(model_two, tokenizer_two, model_inputs, model_one_output, model_two_output, ensemble_output)
+    # except:
+    #     print(line)
+    #     exit()
     ensemble_likelihood = {
         'model_one': (model_one_likelihood['model_one'] + model_two_likelihood['model_one']) / 2,
         'model_two': (model_one_likelihood['model_two'] + model_two_likelihood['model_two']) / 2,
