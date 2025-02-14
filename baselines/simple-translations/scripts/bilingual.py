@@ -9,7 +9,6 @@ model_id = sys.argv[1]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# only need to change the below if it's not English to start
 tokenizer = AutoTokenizer.from_pretrained(model_id, torch_dtype=torch.bfloat16)
 model = AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device)
 
