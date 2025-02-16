@@ -6,29 +6,36 @@ import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from collections import defaultdict
 
-model_one_id = sys.argv[1]
-model_two_id = sys.argv[2]
+model_one_id = sys.argv[1] # must be m2m
+model_two_id = sys.argv[2] # must be m2m
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+# must be the m2m model
 tokenizer_one = AutoTokenizer.from_pretrained(model_one_id)
+tokenizer_one.src_lang = "en"
 model_one = AutoModelForSeq2SeqLM.from_pretrained(model_one_id).to(device)
+german_one = tokenizer_one.get_lang_id("de")
 
+# must be the nllb model
 tokenizer_two = AutoTokenizer.from_pretrained(model_two_id)
 model_two = AutoModelForSeq2SeqLM.from_pretrained(model_two_id).to(device)
+german_two = tokenizer_two.convert_tokens_to_ids("deu_Latn")
 
-def get_model_score(model, tokenizer, inputs, output_one, output_two, ensemble_output):
+def get_model_score(model, tokenizer, inputs, output_one, output_two, ensemble_output, lang_token):
 
-    def get_score(inputs, outputs):
-        input_ids = tokenizer.encode(inputs, return_tensors="pt", max_length=255, truncation=True).to(device)
-        output_ids = tokenizer.encode(outputs, return_tensors="pt", max_length=255, truncation=True).to(device)
-        output_ids = torch.cat((
+    def get_score(inputs, outputs, lang_token):
+        input_ids = tokenizer.encode(inputs, return_tensors="pt", max_length=250, truncation=True).to(device)
+        output_ids = tokenizer.encode(outputs, return_tensors="pt", max_length=250, truncation=True).to(device)
+        output_ids[0][0] = lang_token
+        # add the </s> token to the beggining
+        torch.cat((
             torch.tensor([2], device=device),
             output_ids[0]
         )).view(1, -1)
 
         all_logits = []
-        for i in range(output_ids.shape[-1]-1):
+        for i in range(1, output_ids.shape[-1]-1):
             outputs = model(
                 input_ids = input_ids,
                 decoder_input_ids = output_ids,
@@ -41,9 +48,9 @@ def get_model_score(model, tokenizer, inputs, output_one, output_two, ensemble_o
 
         return sum(all_logits) / len(all_logits)
     output = {
-        'model_one': get_score(inputs, output_one),
-        'model_two': get_score(inputs, output_two),
-        'ensemble': get_score(inputs, ensemble_output),
+        'model_one': get_score(inputs, output_one, lang_token),
+        'model_two': get_score(inputs, output_two, lang_token),
+        'ensemble': get_score(inputs, ensemble_output, lang_token),
     }
     return output
 
@@ -98,8 +105,8 @@ for line in sys.stdin:
 
     # get scores (which determine preferences)
     # try:
-    model_one_likelihood = get_model_score(model_one, tokenizer_one, model_inputs, model_one_output, model_two_output, ensemble_output)
-    model_two_likelihood = get_model_score(model_two, tokenizer_two, model_inputs, model_one_output, model_two_output, ensemble_output)
+    model_one_likelihood = get_model_score(model_one, tokenizer_one, model_inputs, model_one_output, model_two_output, ensemble_output, german_one)
+    model_two_likelihood = get_model_score(model_two, tokenizer_two, model_inputs, model_one_output, model_two_output, ensemble_output, german_two)
     # except:
     #     print(line)
     #     exit()
@@ -131,3 +138,4 @@ for line in sys.stdin:
 
 print(json.dumps(scores, indent=2))
 print(json.dumps(ranking_agreement, indent=2))
+    
