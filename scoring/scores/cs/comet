@@ -1,0 +1,4 @@
+m2m100_1.2B	nllb-200-3.3B	79.9
+nllb-200-3.3B	TowerInstruct-7B-v0.2	81.5
+nllb-200-3.3B	Llama-3.1-8B-Instruct-3-SHOT	81.7
+TowerInstruct-7B-v0.2	Llama-3.1-8B-Instruct-3-SHOT	80.2

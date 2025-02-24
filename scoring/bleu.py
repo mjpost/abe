@@ -1,3 +1,5 @@
+import sys
+target=sys.argv[1]
 
 TOWER_LIST = ["TowerInstruct-7B-v0.2", "TowerInstruct-Mistral-7B-v0.2"]
 LLAMA_LIST = ["Llama-3.2-1B-Instruct/3-SHOT", "Llama-3.2-1B-Instruct/0-SHOT", \
@@ -82,7 +84,7 @@ for tower in TOWER_LIST:
 import os
 import sacrebleu
 
-REFERENCE_PATH = "../refs/wmt24.en-de.de"
+REFERENCE_PATH = f"../refs/wmt24.en-{target}.{target}"
 REFERENCES = [open(REFERENCE_PATH).readlines()]
 
 def get_bleu_score(file_path):
@@ -93,7 +95,7 @@ def get_bleu_score(file_path):
 for exp in experiments:
     model_one = exp[0].replace('/', '-')
     model_two = exp[1].replace('/', '-')
-    path = os.path.join('../translations/wmt24/en-de/targets/', f"{model_one}+{model_two}")
+    path = os.path.join(f'../translations/wmt24/en-{target}/targets/', f"{model_one}+{model_two}")
     if not os.path.exists(path):
         print(f"{model_one}\t{model_two}\t-")
     if os.path.exists(path):

@@ -1,0 +1,8 @@
+TowerInstruct-7B-v0.2	82.5
+Llama-3.1-8B-Instruct-3-SHOT	81.3
+nllb-200-distilled-600M	78.7
+nllb-200-3.3B	80.4
+nllb-200-distilled-1.3B	80.3
+nllb-200-1.3B	80.7
+m2m100_418M	71.9
+m2m100_1.2B	76.3

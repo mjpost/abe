@@ -1,13 +1,17 @@
+import sys
+target=sys.argv[1]
+
+
 import os
 from subprocess import check_output
 
 
 MARIAN_CLI = "- -m wmt22-comet-da -a only -d 0"
 
-SOURCE_PATH="../refs/wmt24.en-de.en"
+SOURCE_PATH=f"../refs/wmt24.en-{target}.en"
 SOURCES = [open(SOURCE_PATH).readlines()]
 
-REFERENCE_PATH="../refs/wmt24.en-de.de"
+REFERENCE_PATH=f"../refs/wmt24.en-{target}.{target}"
 REFERENCES = [open(REFERENCE_PATH).readlines()]
 
 def get_comet_score(file_path):
@@ -99,7 +103,7 @@ for tower in TOWER_LIST:
 for exp in experiments:
     model_one = exp[0].replace('/', '-')
     model_two = exp[1].replace('/', '-')
-    path = os.path.join('../translations/wmt24/en-de/targets/', f"{model_one}+{model_two}")
+    path = os.path.join(f'../translations/wmt24/en-{target}/targets/', f"{model_one}+{model_two}")
     if not os.path.exists(path):
         print(f"{model_one}\t{model_two}\t-")
     if os.path.exists(path):
