@@ -1,5 +1,6 @@
 # Quick Start
 
+### Environment
 
 Set up your environment:
 ```
@@ -8,7 +9,7 @@ conda activate abe
 pip install -r requirements.txt
 ```
 
-## Inputs
+### Inputs
 
 Input streams are tab-separated dictionaries with the inputs.
 
@@ -19,7 +20,9 @@ echo "This is a test." | python ensembling/build/bilingual-no-tags > input.1
 echo "This is a test." | python ensembling/build/src-tgt eng_Latn deu_Latn > input.2
 ```
 
-Then we can paste these files together:
+### Run
+
+Then we can paste these files together and pipe into our ensembling code:
 
 ```
 paste input.1 input.2 | python ensembling/ensemble.py -m rewicks/baseline_en-de_64k_ep25 facebook/nllb-200-distilled-600M -l 256 beam
