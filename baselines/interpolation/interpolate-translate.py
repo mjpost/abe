@@ -15,7 +15,7 @@ import random
 import math
 
 from transformers import MarianMTModel, AutoTokenizer
-torch.manual_seed
+# torch.manual_seed(1414)
 
 class Mixture():
     def __init__(self, ensembled_models, input_ids, encoder_attention_mask, lambdas=[1.0], num_beams=5):
@@ -69,31 +69,6 @@ class Mixture():
 
         # the resulting logits should be an interpolated probability distribution, we return the log probabilities
         return avg_probs
-        
-    # def __call__(self, input_ids, logits):
-
-    #     # logits <-- log probabilities of model one
-    #     # input_ids <-- can use to get unprocessed outputs of model two (i.e., line 66-68)
-
-    #     # breakpoint()
-    #     logits_list = []
-
-    #     # we get the raw, unprocessed logits from the lead model
-    #     logits_list.append(logits * self.lambdas[0])
-
-    #     # for each model, we get the logits and apply the softmax then multiply by the associated lambda (weight)
-    #     for i, model in enumerate(self.ensembled_models[1:], 1):
-    #         with torch.no_grad():
-    #             translation_model_logits = model.forward(
-    #                 decoder_input_ids = input_ids,
-    #                 encoder_outputs = self.encoder_outputs[i]).logits[:, -1, :]
-    #         logits_list.append(F.log_softmax(translation_model_logits, dim=-1) * self.lambdas[i])
-        
-    #     logits = F.log_softmax(torch.sum(torch.stack(logits_list, dim=0), dim=0), dim=-1)
-    #     # the resulting logits should be an interpolated probability distribution, we return the log probabilities
-    #     return logits
-    
-
 
 
 def yield_doc(istream):
@@ -133,12 +108,12 @@ if __name__ == "__main__":
 
     # all tokenizers must be the same anyway
     tokenizer = AutoTokenizer.from_pretrained(args.models[0])
-
+    print(args.models, file=sys.stderr)
     models = []
     # load each of the marian models and add to list
     for m in args.models:
         marian_model = MarianMTModel.from_pretrained(m)
-        marian_model.eval()
+        marian_model = marian_model.eval()
         marian_model = marian_model.to(device)
         models.append(marian_model)
 
@@ -167,7 +142,9 @@ if __name__ == "__main__":
         with torch.no_grad():
             outputs = lead_model.generate(input_ids, 
                                         logits_processor=[Mixture(models, input_ids, attention_mask, lambdas=lambdas)],
-                                        num_beams=5)
+                                        num_beams=5,
+                                        use_cache=False)
         # for each sentence in the batch, we append the generated sentence to the translation context
         for i, output in enumerate(outputs):
-            print(tokenizer.decode(output, skip_special_tokens=True))
+            # print(f'{batch[0]}\t{tokenizer.decode(output, skip_special_tokens=True)}')
+            print(f'{tokenizer.decode(output, skip_special_tokens=True)}')

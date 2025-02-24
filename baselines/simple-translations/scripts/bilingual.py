@@ -11,6 +11,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 tokenizer = AutoTokenizer.from_pretrained(model_id, torch_dtype=torch.bfloat16)
 model = AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device)
+model = model.eval()
 
 for line in sys.stdin:
     line = line.strip()
